@@ -23,8 +23,8 @@ AUTH_MODE = "access"
 # Repository whose "Toast sync" workflow the cron triggers start. The token
 # (GITHUB_DISPATCH_TOKEN) is a secret set in the Cloudflare dashboard.
 GITHUB_REPO = "jtheisen23/Mogu"
-# PLACEHOLDER: Zero Trust team domain that issues the login tokens (README step 3).
-ACCESS_TEAM_DOMAIN = "REPLACE-WITH-TEAM-NAME.cloudflareaccess.com"
+# Zero Trust team domain that issues the login tokens (Zero Trust > Settings > Team domain).
+ACCESS_TEAM_DOMAIN = "lucky-smoke-e977.cloudflareaccess.com"
 # Application Audience (AUD) tag from Zero Trust > Access controls > Applications > mogu.
 ACCESS_AUD = "a0161db3d22146df93ee378b9a49097394a9a7e9fd4723487400050a2d87820d"
 # BOOTSTRAP_ADMINS (comma-separated emails that are always admins) is set as a
