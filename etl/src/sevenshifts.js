@@ -1,0 +1,241 @@
+// Minimal 7shifts API v2 client (read-only) and the shift -> scheduled labor
+// aggregation used by sevenshifts-sync.js.
+//
+// Docs: https://developers.7shifts.com/reference
+
+const DEFAULT_HOST = 'https://api.7shifts.com';
+const PAGE_SIZE = 500;
+
+export class SevenShiftsClient {
+  constructor({ token, host = DEFAULT_HOST, minIntervalMs = 150, log = console.error }) {
+    if (!token) throw new Error('SEVENSHIFTS_ACCESS_TOKEN is required');
+    this.token = token;
+    this.host = host.replace(/\/$/, '');
+    this.minIntervalMs = minIntervalMs;
+    this.log = log;
+    this.lastRequestAt = 0;
+  }
+
+  async get(path, query = {}) {
+    const url = new URL(this.host + path);
+    for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    for (let attempt = 0; ; attempt++) {
+      const wait = this.lastRequestAt + this.minIntervalMs - Date.now();
+      if (wait > 0) await sleep(wait);
+      this.lastRequestAt = Date.now();
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/json' } });
+      if (res.ok) return res.json();
+      if ((res.status === 429 || res.status >= 500) && attempt < 5) {
+        const retryAfter = Number(res.headers.get('Retry-After'));
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt;
+        this.log(`7shifts ${res.status} on ${url.pathname}; retrying in ${delay}ms`);
+        await sleep(delay);
+        continue;
+      }
+      const err = new Error(`7shifts GET ${url.pathname} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+      err.status = res.status;
+      throw err;
+    }
+  }
+
+  /** Follows cursor pagination and returns every record in `data`. */
+  async list(path, query = {}) {
+    const all = [];
+    let cursor;
+    for (let page = 0; page < 200; page++) {
+      const body = await this.get(path, { limit: PAGE_SIZE, ...query, cursor });
+      const data = Array.isArray(body?.data) ? body.data : [];
+      all.push(...data);
+      cursor = body?.meta?.cursor?.next;
+      if (!cursor || !data.length) break;
+    }
+    return all;
+  }
+
+  /** The company this token belongs to. */
+  async company() {
+    const companies = await this.list('/v2/companies');
+    if (!companies.length) throw new Error('The 7shifts token has no company');
+    if (companies.length > 1) this.log(`Token sees ${companies.length} companies; using ${companies[0].id}`);
+    return companies[0];
+  }
+
+  locations(companyId) {
+    return this.list(`/v2/company/${companyId}/locations`);
+  }
+
+  roles(companyId, locationId) {
+    return this.list(`/v2/company/${companyId}/roles`, { location_id: locationId });
+  }
+
+  /** Published, non-deleted shifts starting between two ISO instants. */
+  shifts(companyId, locationId, startIso, endIso) {
+    return this.list(`/v2/company/${companyId}/shifts`, {
+      location_id: locationId,
+      'start[gte]': startIso,
+      'start[lte]': endIso,
+      deleted: false,
+      draft: false,
+    });
+  }
+
+  /** Clock-in/clock-out punches (actual hours worked) clocked in between two ISO instants. */
+  timePunches(companyId, locationId, startIso, endIso) {
+    return this.list(`/v2/company/${companyId}/time_punches`, {
+      location_id: locationId,
+      'clocked_in[gte]': startIso,
+      'clocked_in[lte]': endIso,
+      deleted: false,
+    });
+  }
+
+  /** Log book posts for one location and date (the API ignores date ranges). */
+  logBookPosts(companyId, locationId, date) {
+    return this.list(`/v2/company/${companyId}/log_book_posts`, { location_id: locationId, date });
+  }
+
+  /** Every log book post a location has. */
+  allLogBookPosts(companyId, locationId) {
+    return this.list(`/v2/company/${companyId}/log_book_posts`, { location_id: locationId });
+  }
+
+  logBookCategories(companyId, locationId) {
+    return this.list(`/v2/company/${companyId}/log_book_categories`, { location_id: locationId });
+  }
+
+  /** Comments for a batch of posts. */
+  logBookComments(companyId, postIds) {
+    return this.list(`/v2/company/${companyId}/log_book_comments`, { log_book_ids: postIds.join(',') });
+  }
+
+  /** id -> display name for every user in the company. */
+  async userNames(companyId) {
+    const users = await this.list(`/v2/company/${companyId}/users`);
+    return new Map(users.map((u) => [u.id, displayName(u)]));
+  }
+
+  /** Current wages of one user; used when a shift has no wage on it. */
+  async userWages(companyId, userId) {
+    const body = await this.get(`/v2/company/${companyId}/users/${userId}/wages`);
+    return body?.data?.current_wages ?? [];
+  }
+}
+
+export function displayName(u) {
+  const first = u?.preferred_first_name || u?.first_name || '';
+  const last = u?.preferred_last_name || u?.last_name || '';
+  return `${first} ${last}`.trim();
+}
+
+const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Pairs each dashboard location with a 7shifts location: an explicit
+ * `sevenShiftsId` in the location config wins, otherwise the 7shifts name
+ * must contain the dashboard name (e.g. "MÓGŪ Modern Chinese Kitchen – Holbrook" ~ "Holbrook").
+ */
+export function matchLocations(configured, remote) {
+  const out = [];
+  for (const loc of configured) {
+    let match = null;
+    if (loc.sevenShiftsId) match = remote.find((r) => String(r.id) === String(loc.sevenShiftsId)) || null;
+    if (!match) {
+      const want = norm(loc.name);
+      const hits = remote.filter((r) => norm(r.name).includes(want) || (norm(r.name) && want.includes(norm(r.name))));
+      if (hits.length === 1) match = hits[0];
+    }
+    out.push({ loc, remote: match });
+  }
+  return out;
+}
+
+const dateFormatters = new Map();
+/** Local calendar date (YYYY-MM-DD) of an instant in a time zone. */
+export function localDate(iso, timeZone) {
+  let f = dateFormatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    dateFormatters.set(timeZone, f);
+  }
+  return f.format(new Date(iso));
+}
+
+/** UTC instant of local midnight on `date` in `timeZone`. */
+export function localMidnightUtc(date, timeZone) {
+  const guess = new Date(`${date}T00:00:00Z`);
+  // Offset of the zone at that moment, e.g. -7h for PDT.
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(guess).map((p) => [p.type, p.value]),
+  );
+  const asLocal = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  return new Date(guess.getTime() - (asLocal - guess.getTime()));
+}
+
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
+
+/** Unpaid break minutes on a shift, whichever way 7shifts reports them. */
+function unpaidBreakMinutes(s) {
+  if (Array.isArray(s.breaks)) {
+    return s.breaks
+      .filter((b) => !b.paid && b.is_paid !== true && String(b.type ?? '').toLowerCase() !== 'paid')
+      .reduce((m, b) => m + (num(b.duration_override_min) || num(b.length) || num(b.duration) || num(b.minutes)), 0);
+  }
+  return num(s.unpaid_break_minutes) || num(s.break_minutes) || 0;
+}
+
+/** Wage in dollars per hour. 7shifts v2 reports wages in cents. */
+export function shiftWage(s, userWage) {
+  const cents = num(s.hourly_wage) || num(s.wage_cents) || num(userWage);
+  return cents / 100;
+}
+
+/**
+ * Turns shifts into rows of { business_date, role, shifts, employees, hours,
+ * cost, open_shifts, open_hours } for one location. Shifts are dated by their
+ * local start time. `excludedRoles` are lower-cased names to leave out.
+ */
+export function aggregateShifts(shifts, { timeZone, roles, wageFor = () => 0, excludedRoles = [] }) {
+  const skip = new Set(excludedRoles.map((r) => r.toLowerCase()));
+  const roleName = (id) => roles.get(id) || (id ? `Role ${id}` : 'No role');
+  const groups = new Map();
+  for (const s of shifts) {
+    if (s.deleted || s.soft_deleted || s.draft) continue;
+    const start = Date.parse(s.start);
+    const end = Date.parse(s.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const role = roleName(s.role_id);
+    if (skip.has(role.trim().toLowerCase())) continue;
+    const date = localDate(s.start, timeZone);
+    const key = `${date}|${role}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { business_date: date, role, shifts: 0, users: new Set(), hours: 0, cost: 0, open_shifts: 0, open_hours: 0 };
+      groups.set(key, g);
+    }
+    const hours = Math.max(0, (end - start) / 3600000 - unpaidBreakMinutes(s) / 60);
+    if (s.open || !s.user_id) {
+      g.open_shifts++;
+      g.open_hours += hours;
+      continue;
+    }
+    g.shifts++;
+    g.users.add(s.user_id);
+    g.hours += hours;
+    g.cost += hours * shiftWage(s, wageFor(s));
+  }
+  return [...groups.values()].map(({ users, ...g }) => ({
+    ...g,
+    employees: users.size,
+    hours: round2(g.hours),
+    cost: round2(g.cost),
+    open_hours: round2(g.open_hours),
+  }));
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}

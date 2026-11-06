@@ -15,7 +15,7 @@ export class HttpError extends Error {
   }
 }
 
-export const SECTIONS = ['sales', 'discounts', 'labor', 'items'];
+export const SECTIONS = ['sales', 'discounts', 'labor', 'items', 'sevenshifts'];
 
 let jwksCache = { domain: null, keys: new Map(), fetchedAt: 0 };
 
