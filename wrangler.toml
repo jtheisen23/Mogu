@@ -14,8 +14,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "mogu"
-# PLACEHOLDER: replace with the id printed by `npx wrangler d1 create mogu` (README step 2).
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "74334217-55c0-4cf7-96c3-8668dd310aae"
 migrations_dir = "db/migrations"
 
 [vars]
