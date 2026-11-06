@@ -5,7 +5,7 @@
 //   node etl/src/index.js --days 7              # last 7 business dates
 //   node etl/src/index.js --start 2025-01-01 --end 2025-12-31   # backfill
 //   node etl/src/index.js --locations DT,UT --out .tmp/sync.sql  # write SQL instead of D1
-//   node etl/src/index.js --backfill --from 2025-01-01 --max-rows 60000  # nightly history load
+//   node etl/src/index.js --backfill --from 2025-01-01 --max-rows 40000  # nightly history load
 //   node etl/src/index.js --start 2026-02-01 --end 2026-10-10 --revenue-centers-only
 //                                   # rewrite only revenue center sales (after a mapping fix)
 //
@@ -32,7 +32,7 @@ const { values: args } = parseArgs({
     'revenue-centers-only': { type: 'boolean', default: false },
     backfill: { type: 'boolean', default: false },
     from: { type: 'string', default: '2025-01-01' },
-    'max-rows': { type: 'string', default: '60000' },
+    'max-rows': { type: 'string', default: '40000' },
     config: { type: 'string', default: 'config/locations.json' },
   },
 });
