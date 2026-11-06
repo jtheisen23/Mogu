@@ -25,8 +25,8 @@ AUTH_MODE = "access"
 GITHUB_REPO = "jtheisen23/Mogu"
 # PLACEHOLDER: Zero Trust team domain that issues the login tokens (README step 3).
 ACCESS_TEAM_DOMAIN = "REPLACE-WITH-TEAM-NAME.cloudflareaccess.com"
-# PLACEHOLDER: Application Audience (AUD) tag from Zero Trust > Access > Applications > your app.
-ACCESS_AUD = "REPLACE_WITH_ACCESS_AUD_TAG"
+# Application Audience (AUD) tag from Zero Trust > Access controls > Applications > mogu.
+ACCESS_AUD = "a0161db3d22146df93ee378b9a49097394a9a7e9fd4723487400050a2d87820d"
 # BOOTSTRAP_ADMINS (comma-separated emails that are always admins) is set as a
 # secret in the Cloudflare dashboard so it isn't published in this repo.
 
