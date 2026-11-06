@@ -254,6 +254,14 @@ export function hourlyWageCents(wages, roleId) {
 }
 
 /**
+ * The wage (cents/hour) labor is costed at: the one on the shift or punch,
+ * else the person's hourly 7shifts wage for the role.
+ */
+export function effectiveWageCents(wages, roleId, cents = 0) {
+  return num(cents) || hourlyWageCents(wages, roleId);
+}
+
+/**
  * True when the person is salaried for this role: their 7shifts wage for the
  * role (or, without one, every wage they have) is not hourly, or the wage on
  * the shift/punch is a salary-sized number. Salaried pay is not hours x rate,
