@@ -8,6 +8,10 @@ const SECTION_LABELS = { sales: 'Sales', discounts: 'Discounts & comps', labor: 
 // after the page re-renders.
 let accessNote = null;
 
+const signedIn = (iso) => (iso
+  ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+  : null);
+
 export async function adminView(ctx) {
   const data = await ctx.api('/api/admin/users', null, { noQuery: true });
   const locName = new Map(data.locations.map((l) => [l.id, l.name]));
@@ -29,6 +33,7 @@ export async function adminView(ctx) {
         : u.locations.length ? u.locations.map((l) => h('span', { class: 'pill on' }, locName.get(l) || l)) : h('span', { class: 'muted' }, 'None')),
       h('td', { class: 'text' }, Object.entries(SECTION_LABELS).map(([k, label]) =>
         h('span', { class: `pill ${u.role === 'admin' || u.sections[k] ? 'on' : ''}` }, u.role === 'admin' || u.sections[k] ? label : `no ${label.toLowerCase()}`))),
+      h('td', { class: 'text', style: { whiteSpace: 'nowrap' } }, signedIn(u.lastLoginAt) || h('span', { class: 'muted' }, 'Never')),
       h('td', {}, h('button', { class: 'btn', type: 'button', onclick: () => edit(u) }, 'Edit')),
     ));
 
@@ -42,7 +47,11 @@ export async function adminView(ctx) {
   return h('div', { class: 'stack' },
     note ? h('div', { class: 'notice', style: note.status === 'error' ? { color: 'var(--bad)' } : {} }, note.message) : null,
     h('div', { class: 'notice' },
-      data.bootstrapAdmins.length ? `Always-admin (BOOTSTRAP_ADMINS): ${data.bootstrapAdmins.join(', ')}. ` : '',
+      data.bootstrapAdmins.length
+        ? `Always-admin (BOOTSTRAP_ADMINS): ${data.bootstrapAdmins
+          .map((e) => `${e} (last sign-in ${signedIn(data.bootstrapLastLogin?.[e]) || 'never'})`)
+          .join(', ')}. `
+        : '',
       signIn),
     h('section', { class: 'card' },
       h('div', { class: 'card-head' },
@@ -50,8 +59,8 @@ export async function adminView(ctx) {
         h('button', { class: 'btn primary', type: 'button', onclick: () => edit(null) }, 'Add user')),
       h('div', { class: 'table-wrap' },
         h('table', {},
-          h('thead', {}, h('tr', {}, ['User', 'Role', 'Locations', 'Can see', ''].map((l) => h('th', { class: 'text' }, l)))),
-          h('tbody', {}, rows.length ? rows : h('tr', {}, h('td', { class: 'text', colspan: 5 }, 'No users yet — add one.')))))),
+          h('thead', {}, h('tr', {}, ['User', 'Role', 'Locations', 'Can see', 'Last sign-in', ''].map((l) => h('th', { class: 'text' }, l)))),
+          h('tbody', {}, rows.length ? rows : h('tr', {}, h('td', { class: 'text', colspan: 6 }, 'No users yet — add one.')))))),
     formHolder,
     await groupsCard(ctx),
     h('section', { class: 'card' },

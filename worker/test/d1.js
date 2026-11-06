@@ -13,7 +13,14 @@ export function d1(db) {
     s.run(...args);
     return { results: [] };
   };
-  const stmt = (sql, args = []) => ({ sql, args, bind: (...a) => stmt(sql, a), all: async () => run(sql, args) });
+  const stmt = (sql, args = []) => ({
+    sql,
+    args,
+    bind: (...a) => stmt(sql, a),
+    all: async () => run(sql, args),
+    run: async () => run(sql, args),
+    first: async () => run(sql, args).results[0] ?? null,
+  });
   return {
     prepare: (sql) => stmt(sql),
     batch: async (stmts) => {

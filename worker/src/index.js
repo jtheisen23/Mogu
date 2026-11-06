@@ -1,7 +1,7 @@
 // Cloudflare Worker entry point. Static files in /public are served directly
 // by Workers Static Assets; everything under /api/* lands here.
 
-import { authenticate, HttpError } from './auth.js';
+import { authenticate, HttpError, recordLogin } from './auth.js';
 import * as api from './api.js';
 import * as admin from './admin.js';
 import { dispatchSync } from './scheduler.js';
@@ -26,6 +26,7 @@ async function route(request, env) {
   if (method === 'GET') {
     switch (pathname) {
       case '/api/me':
+        await recordLogin(env, user);
         return json({ user });
       case '/api/locations':
         return json(await api.locations(env, user));
