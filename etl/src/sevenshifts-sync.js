@@ -7,6 +7,13 @@
 //   node etl/src/sevenshifts-sync.js --check                # read-only report of what the token can see
 //   node etl/src/sevenshifts-sync.js --logbook-all          # also load every log book entry ever posted
 //   node etl/src/sevenshifts-sync.js --days 7 --out .tmp/7s.sql
+//   node etl/src/sevenshifts-sync.js --days 2 --labor       # also actual labor from time punches
+//
+// With --labor, actual labor (labor_daily, the Labor tab) comes from 7shifts
+// time punches instead of Toast time entries: hourly punches only, overtime
+// past 40 h per employee per workweek (SEVENSHIFTS_WEEK_START, default 1 =
+// Monday) across all locations, salaried pay from each location's
+// salariedLaborPerDay. Run the Toast sync with --skip-labor alongside it.
 //
 // Environment: SEVENSHIFTS_ACCESS_TOKEN, LOCATIONS_JSON (or config/locations.json),
 //   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_ID
@@ -15,7 +22,10 @@ import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { addDays, parseDate, todayIn } from './dates.js';
 import { loadLocations } from './config.js';
-import { aggregateShifts, localMidnightUtc, matchLocations, SevenShiftsClient } from './sevenshifts.js';
+import {
+  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
+  matchLocations, punchHours, punchLaborRows, SevenShiftsClient, weekStartOf,
+} from './sevenshifts.js';
 import { lit } from './sql.js';
 import { D1Sink, FileSink } from './sink.js';
 
@@ -29,6 +39,7 @@ const { values: args } = parseArgs({
     check: { type: 'boolean', default: false },
     'logbook-all': { type: 'boolean', default: false },
     'skip-logbook': { type: 'boolean', default: false },
+    labor: { type: 'boolean', default: false },
     config: { type: 'string', default: 'config/locations.json' },
   },
 });
@@ -53,9 +64,36 @@ async function main() {
       });
 
   const company = await client.company();
-  const pairs = matchLocations(locations, await client.locations(company.id));
+  const remoteLocations = await client.locations(company.id);
+  const pairs = matchLocations(locations, remoteLocations);
   let failures = 0;
   let names = null; // user id -> name, loaded once if the log book is synced
+
+  // Current 7shifts wages per user, fetched once per run (used for missing
+  // wages and to tell salaried people from hourly ones).
+  const wageCache = new Map();
+  const wagesOf = async (userId) => {
+    if (!userId) return [];
+    if (!wageCache.has(userId)) {
+      try {
+        wageCache.set(userId, await client.userWages(company.id, userId));
+      } catch (err) {
+        wageCache.set(userId, []);
+        log(`  wages for user ${userId} unavailable (${err.status ?? err.message})`);
+      }
+    }
+    return wageCache.get(userId);
+  };
+
+  let labor = null;
+  if (args.labor) {
+    try {
+      labor = await punchLabor(client, company.id, remoteLocations, pairs, wagesOf);
+    } catch (err) {
+      failures++;
+      log(`Actual labor from 7shifts: FAILED - ${err.message}`);
+    }
+  }
 
   for (const { loc, remote } of pairs) {
     if (!remote) {
@@ -65,8 +103,20 @@ async function main() {
     }
     const tz = loc.timezone || remote.timezone || 'America/New_York';
     const { start, end } = dateRange(tz);
+    if (labor?.has(loc.id)) {
+      const l = labor.get(loc.id);
+      try {
+        await sink.write(laborStatements(loc.id, l.days, l.rows, loc.salariedLaborPerDay));
+        const hours = l.rows.reduce((s, r) => s + r.regular_hours + r.overtime_hours, 0);
+        const cost = l.rows.reduce((s, r) => s + r.regular_cost + r.overtime_cost, 0);
+        log(`${loc.id} actual labor: ${l.start} .. ${l.end}, ${l.days.length} day(s) with punches, ${l.punches} hourly punches, ${hours.toFixed(1)} h, $${cost.toFixed(2)}${l.salaried ? ` (${l.salaried} salaried punches left out)` : ''}`);
+      } catch (err) {
+        failures++;
+        log(`${loc.id} actual labor: FAILED - ${err.message}`);
+      }
+    }
     try {
-      const rows = await syncLocation(client, company.id, remote, tz, start, end);
+      const rows = await syncLocation(client, company.id, remote, tz, start, end, wagesOf);
       await sink.write(statements(loc.id, start, end, rows));
       const hours = rows.reduce((s, r) => s + r.hours, 0);
       const cost = rows.reduce((s, r) => s + r.cost, 0);
@@ -93,7 +143,7 @@ async function main() {
   if (failures) process.exitCode = 1;
 }
 
-async function syncLocation(client, companyId, remote, tz, start, end) {
+async function syncLocation(client, companyId, remote, tz, start, end, wagesOf) {
   const roleRows = await client.roles(companyId, remote.id);
   const roles = new Map(roleRows.map((r) => [r.id, r.name]));
   const shifts = await client.shifts(
@@ -103,22 +153,82 @@ async function syncLocation(client, companyId, remote, tz, start, end) {
     new Date(localMidnightUtc(addDays(end, 1), tz).getTime() - 1000).toISOString(),
   );
 
-  // Shifts without a wage on them fall back to the employee's current wage for that role.
+  // Shifts without a wage on them fall back to the employee's current hourly
+  // wage for that role. Salaried people's shifts are left out, as in actual labor.
   const wages = new Map();
-  for (const s of shifts) {
-    if (s.hourly_wage || !s.user_id || s.open || wages.has(s.user_id)) continue;
-    try {
-      wages.set(s.user_id, await client.userWages(companyId, s.user_id));
-    } catch (err) {
-      wages.set(s.user_id, []);
-      log(`  wages for user ${s.user_id} unavailable (${err.status ?? err.message})`);
+  for (const s of shifts) if (s.user_id && !s.open && !wages.has(s.user_id)) wages.set(s.user_id, await wagesOf(s.user_id));
+  const wageFor = (s) => hourlyWageCents(wages.get(s.user_id), s.role_id);
+  const exclude = (s) => !!s.user_id && !s.open && isSalaried(wages.get(s.user_id), s.role_id, s.hourly_wage);
+  return aggregateShifts(shifts, { timeZone: tz, roles, wageFor, excludedRoles: EXCLUDED_ROLES, exclude });
+}
+
+/**
+ * Actual labor from time punches for every matched location. Punches are
+ * read for all 7shifts locations (Central Kitchen too) from the start of the
+ * first workweek, so overtime counts every hour an employee worked that week.
+ * Returns loc.id -> { start, end, rows, punches, salaried }.
+ */
+async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
+  const weekStart = Number(process.env.SEVENSHIFTS_WEEK_START ?? 1);
+  const overtimeMultiplier = Number(process.env.OVERTIME_MULTIPLIER || 1.5);
+  const skip = new Set(EXCLUDED_ROLES);
+  const items = [];
+  const ranges = new Map();
+  const salariedByRemote = new Map();
+  const daysByRemote = new Map(); // days with any closed punch: only those days are replaced
+  for (const r of remoteLocations) {
+    const pair = pairs.find((p) => p.remote?.id === r.id);
+    const tz = pair?.loc.timezone || r.timezone || 'America/New_York';
+    const { start, end } = dateRange(tz);
+    const today = todayIn(tz);
+    const last = end < today ? end : today; // no punches in the future
+    if (last < start) continue;
+    ranges.set(r.id, { start, end: last });
+    const from = weekStartOf(start, weekStart);
+    const punches = await client.timePunches(
+      companyId,
+      r.id,
+      localMidnightUtc(from, tz).toISOString(),
+      new Date(localMidnightUtc(addDays(last, 1), tz).getTime() - 1000).toISOString(),
+    );
+    const roles = new Map((await client.roles(companyId, r.id)).map((x) => [x.id, x.name]));
+    let salaried = 0;
+    const days = new Set();
+    for (const p of punches) {
+      if (p.deleted || !p.user_id) continue;
+      const hours = punchHours(p);
+      if (hours === null) continue; // still clocked in; a later sync picks it up
+      const date = localDate(p.clocked_in, tz);
+      if (date >= start && date <= last) days.add(date);
+      const role = roles.get(p.role_id) || (p.role_id ? `Role ${p.role_id}` : 'No role');
+      if (skip.has(role.trim().toLowerCase())) continue;
+      const wages = await wagesOf(p.user_id);
+      if (isSalaried(wages, p.role_id, p.hourly_wage)) {
+        salaried++;
+        continue;
+      }
+      const cents = Number(p.hourly_wage) || hourlyWageCents(wages, p.role_id);
+      items.push({ remoteId: r.id, user_id: p.user_id, clockedIn: Date.parse(p.clocked_in), date, hours, role, wage: cents / 100 });
     }
+    salariedByRemote.set(r.id, salaried);
+    daysByRemote.set(r.id, [...days]);
   }
-  const wageFor = (s) => {
-    const list = (wages.get(s.user_id) || []).filter((w) => !w.wage_type || w.wage_type === 'hourly');
-    return (list.find((w) => w.role_id === s.role_id) || list[0])?.wage_cents ?? 0;
-  };
-  return aggregateShifts(shifts, { timeZone: tz, roles, wageFor, excludedRoles: EXCLUDED_ROLES });
+  allocateOvertime(items, { weekStart });
+
+  const out = new Map();
+  for (const { loc, remote } of pairs) {
+    const range = remote && ranges.get(remote.id);
+    if (!range) continue;
+    const mine = items.filter((it) => it.remoteId === remote.id && it.date >= range.start && it.date <= range.end);
+    out.set(loc.id, {
+      ...range,
+      days: daysByRemote.get(remote.id) || [],
+      rows: punchLaborRows(mine, { overtimeMultiplier }),
+      punches: mine.length,
+      salaried: salariedByRemote.get(remote.id) || 0,
+    });
+  }
+  return out;
 }
 
 /** Log book posts with category names, author names and comments attached. */
@@ -262,8 +372,7 @@ async function check(client, locations) {
       if (shifts.length) {
         const keys = [...new Set(shifts.flatMap((s) => Object.keys(s)))].sort();
         out(`Shift fields: ${keys.join(', ')}`);
-        const wages = shifts.map((s) => Number(s.hourly_wage)).filter((w) => w > 0).sort((a, b) => a - b);
-        out(`Shifts with hourly_wage: ${wages.length}/${shifts.length}; median ${wages.length ? wages[Math.floor(wages.length / 2)] : 'n/a'} (expected in cents)`);
+        out(`Shifts with hourly_wage: ${shifts.filter((s) => Number(s.hourly_wage) > 0).length}/${shifts.length}`);
         out(`Open shifts: ${shifts.filter((s) => s.open || !s.user_id).length}; with breaks array: ${shifts.filter((s) => Array.isArray(s.breaks) && s.breaks.length).length}`);
         const sample = shifts.find((s) => Array.isArray(s.breaks) && s.breaks.length);
         if (sample) out(`Break fields: ${Object.keys(sample.breaks[0]).join(', ')}; types: ${[...new Set(shifts.flatMap((s) => (s.breaks || []).map((b) => b.type)))].join(', ')}`);
@@ -279,7 +388,8 @@ async function check(client, locations) {
           }
         }
       }
-      await checkPunches(client, company.id, r, tz, today, out);
+      const punches = await checkPunches(client, company.id, r, tz, today, out);
+      await checkWageTypes(client, company.id, new Map(roles.map((x) => [x.id, x.name])), shifts, punches || [], out);
     }
   } catch (err) {
     out(`**Failed:** ${err.message}`);
@@ -306,8 +416,6 @@ async function checkPunches(client, companyId, r, tz, today, out) {
   for (const f of ['clocked_out', 'approved', 'role_id', 'department_id', 'shift_id', 'hourly_wage', 'wage', 'tips', 'deleted']) {
     if (keys.includes(f)) out(`- ${f}: true/set on ${has(f)}/${punches.length}`);
   }
-  const wages = punches.map((p) => Number(p.hourly_wage)).filter((w) => w > 0).sort((a, b) => a - b);
-  if (wages.length) out(`- hourly_wage median ${wages[Math.floor(wages.length / 2)]}, range ${wages[0]}..${wages[wages.length - 1]} (cents if in the thousands)`);
   const withBreaks = punches.filter((p) => Array.isArray(p.breaks) && p.breaks.length);
   out(`- with breaks: ${withBreaks.length}`);
   if (withBreaks.length) {
@@ -320,6 +428,64 @@ async function checkPunches(client, companyId, r, tz, today, out) {
     return Number.isFinite(a) && Number.isFinite(b) && b > a ? sum + (b - a) / 3600000 : sum;
   }, 0);
   out(`- clocked hours before breaks: ${hours.toFixed(1)} across ${new Set(punches.map((p) => p.user_id)).size} employees`);
+  return punches;
+}
+
+// An "hourly" wage above this (in cents) is almost certainly a salary amount.
+const IMPLAUSIBLE_HOURLY_CENTS = 10000;
+
+/**
+ * Per role: how many shifts and punches carry a wage, how many of those look
+ * like a salary rather than an hourly rate, and which 7shifts wage types the
+ * people in that role have. Counts only: no names or amounts, because the
+ * Actions log may be public.
+ */
+async function checkWageTypes(client, companyId, roles, shifts, punches, out) {
+  const roleName = (id) => roles.get(id) || (id ? `role ${id}` : 'no role');
+  const userIds = [...new Set([...shifts, ...punches].map((x) => x.user_id).filter(Boolean))];
+  const typesByUser = new Map();
+  for (const id of userIds.slice(0, 60)) {
+    try {
+      const wages = await client.userWages(companyId, id);
+      typesByUser.set(id, wages.map((w) => ({ type: w.wage_type || 'unknown', role: w.role_id, cents: Number(w.wage_cents) || 0 })));
+    } catch (err) {
+      typesByUser.set(id, [{ type: `lookup failed (${err.status ?? 'error'})`, role: null, cents: 0 }]);
+    }
+  }
+  const rows = new Map();
+  const row = (role) => {
+    if (!rows.has(role)) rows.set(role, { shifts: 0, shiftHigh: 0, punches: 0, punchNoWage: 0, punchHigh: 0, salaryOnShift: 0, types: new Map() });
+    return rows.get(role);
+  };
+  for (const s of shifts) {
+    if (!s.user_id || s.open) continue;
+    const r = row(roleName(s.role_id));
+    r.shifts++;
+    const cents = Number(s.hourly_wage) || 0;
+    if (cents > IMPLAUSIBLE_HOURLY_CENTS) r.shiftHigh++;
+    if ((typesByUser.get(s.user_id) || []).some((w) => w.type !== 'hourly' && w.cents && w.cents === cents)) r.salaryOnShift++;
+  }
+  for (const p of punches) {
+    const r = row(roleName(p.role_id));
+    r.punches++;
+    const cents = Number(p.hourly_wage) || 0;
+    if (!cents) r.punchNoWage++;
+    if (cents > IMPLAUSIBLE_HOURLY_CENTS) r.punchHigh++;
+  }
+  for (const [userId, wages] of typesByUser) {
+    const inRoles = new Set([...shifts, ...punches].filter((x) => x.user_id === userId).map((x) => roleName(x.role_id)));
+    for (const role of inRoles) {
+      const t = row(role).types;
+      for (const type of new Set(wages.map((w) => w.type))) t.set(type, (t.get(type) || 0) + 1);
+    }
+  }
+  out('');
+  out('| Role | Shifts | Shift wage > $100/h | Shift wage = salary | Punches | Punches without wage | Punch wage > $100/h | 7shifts wage types (people) |');
+  out('|---|---|---|---|---|---|---|---|');
+  for (const [role, r] of [...rows].sort()) {
+    const types = [...r.types].map(([t, n]) => `${t} ×${n}`).join(', ') || '—';
+    out(`| ${role} | ${r.shifts} | ${r.shiftHigh} | ${r.salaryOnShift} | ${r.punches} | ${r.punchNoWage} | ${r.punchHigh} | ${types} |`);
+  }
 }
 
 main().catch((err) => {

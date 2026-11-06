@@ -49,4 +49,9 @@ jobs:
           # Passed through env, not interpolated into the script.
           IN_FROM: ${{ inputs.from || '2025-01-01' }}
           IN_MAX_ROWS: ${{ inputs.max_rows || '1000000' }}
-        run: node etl/src/index.js --backfill --from "$IN_FROM" --max-rows "$IN_MAX_ROWS"
+          # With 7shifts labor, Toast history must not overwrite labor_daily.
+          LABOR_SOURCE: ${{ vars.LABOR_SOURCE || '7shifts' }}
+        run: |
+          args=(--backfill --from "$IN_FROM" --max-rows "$IN_MAX_ROWS")
+          [ "$LABOR_SOURCE" = "7shifts" ] && args+=(--skip-labor)
+          node etl/src/index.js "${args[@]}"
