@@ -10,10 +10,11 @@
 //   node etl/src/sevenshifts-sync.js --days 2 --labor       # also actual labor from time punches
 //
 // With --labor, actual labor (labor_daily, the Labor tab) comes from 7shifts
-// time punches instead of Toast time entries: hourly punches only, overtime
+// time punches, and only from them (the Toast sync runs with --skip-labor);
+// every synced day is replaced. Hourly punches only, overtime
 // past 40 h per employee per workweek (SEVENSHIFTS_WEEK_START, default 1 =
 // Monday) across all locations, salaried pay from each location's
-// salariedLaborPerDay. Run the Toast sync with --skip-labor alongside it.
+// salariedLaborPerDay.
 //
 // Environment: SEVENSHIFTS_ACCESS_TOKEN, LOCATIONS_JSON (or config/locations.json),
 //   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_ID
@@ -106,7 +107,7 @@ async function main() {
     if (labor?.has(loc.id)) {
       const l = labor.get(loc.id);
       try {
-        await sink.write(laborStatements(loc.id, l.days, l.rows, loc.salariedLaborPerDay));
+        await sink.write(laborStatements(loc.id, l.start, l.end, l.rows, loc.salariedLaborPerDay));
         const hours = l.rows.reduce((s, r) => s + r.regular_hours + r.overtime_hours, 0);
         const cost = l.rows.reduce((s, r) => s + r.regular_cost + r.overtime_cost, 0);
         log(`${loc.id} actual labor: ${l.start} .. ${l.end}, ${l.days.length} day(s) with punches, ${l.punches} hourly punches, ${hours.toFixed(1)} h, $${cost.toFixed(2)}${l.salaried ? ` (${l.salaried} salaried punches left out)` : ''}`);
@@ -175,7 +176,7 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
   const items = [];
   const ranges = new Map();
   const salariedByRemote = new Map();
-  const daysByRemote = new Map(); // days with any closed punch: only those days are replaced
+  const daysByRemote = new Map(); // days with any closed punch (reported in the log)
   for (const r of remoteLocations) {
     const pair = pairs.find((p) => p.remote?.id === r.id);
     const tz = pair?.loc.timezone || r.timezone || 'America/New_York';
