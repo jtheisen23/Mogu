@@ -82,12 +82,13 @@ npx wrangler d1 create mogu             # copy the database_id into wrangler.tom
 npm run db:migrate:remote
 ```
 Run `npm run deploy`, or connect the repo under *Workers & Pages → Create → Import a repository*
-(deploy command `npx wrangler deploy`) so every push to `main` deploys. In the Worker's
+(project name `mogu`, matching `name` in `wrangler.toml`; deploy command `npx wrangler deploy`)
+so every push to `main` deploys. In the Worker's
 **Settings → Build → Branch control**, turn **off** builds for preview (non-production)
 branches: they fail, and preview URLs can't sign in through Access anyway. Only `main` deploys. Then, in the Worker's
 **Settings → Variables and Secrets**, add a **secret** `BOOTSTRAP_ADMINS` with your email, so you
 can't lock yourself out. `keep_vars = true` in `wrangler.toml` stops deploys from erasing it.
-The `Database migrations` GitHub workflow creates or updates the tables using the secrets from step 4. Wrangler prints the dashboard URL (`https://mogu-dashboard.<you>.workers.dev`).
+The `Database migrations` GitHub workflow creates or updates the tables using the secrets from step 4. The dashboard is at `https://mogu.mogu-7d2.workers.dev`.
 You can add a custom domain later under the Worker's **Settings → Domains & Routes**.
 
 ### 3. Cloudflare Access (logins)
