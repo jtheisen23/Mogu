@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
+  aggregateShifts, allocateOvertime, effectiveWageCents, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
   matchLocations, punchHours, punchLaborRows, weekStartOf,
 } from '../src/sevenshifts.js';
 import { migratedDb } from '../../worker/test/d1.js';
@@ -122,4 +122,16 @@ test('7shifts labor replaces every day in the range; Toast labor is removed', ()
     { business_date: '2026-11-02', job_title: 'Salaried', regular_cost: 178.08 },
   ]);
   assert.deepEqual(laborStatements('HB', '2026-11-03', '2026-11-02', rows), []);
+});
+
+test('a salary entered as an "hourly" 7shifts wage is treated as salaried', () => {
+  // Real case: punches without a wage fell back to an hourly wage of 6,500,000 cents.
+  const wages = [{ role_id: 5, wage_type: 'hourly', wage_cents: 6500000 }];
+  const punchWage = 0;
+  assert.equal(isSalaried(wages, 5, punchWage), false); // the punch alone looks fine...
+  const cents = effectiveWageCents(wages, 5, punchWage);
+  assert.equal(cents, 6500000);
+  assert.equal(isSalaried(wages, 5, cents), true); // ...the wage it would be costed at does not
+  assert.equal(effectiveWageCents(wages, 5, 1800), 1800); // a wage on the punch wins
+  assert.equal(isSalaried([{ role_id: 5, wage_type: 'hourly', wage_cents: 1750 }], 5, effectiveWageCents([{ role_id: 5, wage_type: 'hourly', wage_cents: 1750 }], 5, 0)), false);
 });

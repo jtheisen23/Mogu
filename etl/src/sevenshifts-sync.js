@@ -24,7 +24,7 @@ import { parseArgs } from 'node:util';
 import { addDays, parseDate, todayIn } from './dates.js';
 import { loadLocations } from './config.js';
 import {
-  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
+  aggregateShifts, allocateOvertime, effectiveWageCents, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
   matchLocations, punchHours, punchLaborRows, SevenShiftsClient, weekStartOf,
 } from './sevenshifts.js';
 import { lit } from './sql.js';
@@ -159,7 +159,10 @@ async function syncLocation(client, companyId, remote, tz, start, end, wagesOf) 
   const wages = new Map();
   for (const s of shifts) if (s.user_id && !s.open && !wages.has(s.user_id)) wages.set(s.user_id, await wagesOf(s.user_id));
   const wageFor = (s) => hourlyWageCents(wages.get(s.user_id), s.role_id);
-  const exclude = (s) => !!s.user_id && !s.open && isSalaried(wages.get(s.user_id), s.role_id, s.hourly_wage);
+  // The check uses the wage the shift would be costed at, fallback included: some
+  // salaried people have their salary entered as an "hourly" 7shifts wage.
+  const exclude = (s) => !!s.user_id && !s.open
+    && isSalaried(wages.get(s.user_id), s.role_id, effectiveWageCents(wages.get(s.user_id), s.role_id, s.hourly_wage));
   return aggregateShifts(shifts, { timeZone: tz, roles, wageFor, excludedRoles: EXCLUDED_ROLES, exclude });
 }
 
@@ -204,11 +207,13 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
       const role = roles.get(p.role_id) || (p.role_id ? `Role ${p.role_id}` : 'No role');
       if (skip.has(role.trim().toLowerCase())) continue;
       const wages = await wagesOf(p.user_id);
-      if (isSalaried(wages, p.role_id, p.hourly_wage)) {
+      // Checked against the wage the punch is costed at (fallback included): some
+      // salaried people have their salary entered as an "hourly" 7shifts wage.
+      const cents = effectiveWageCents(wages, p.role_id, p.hourly_wage);
+      if (isSalaried(wages, p.role_id, cents)) {
         salaried++;
         continue;
       }
-      const cents = Number(p.hourly_wage) || hourlyWageCents(wages, p.role_id);
       items.push({ remoteId: r.id, user_id: p.user_id, clockedIn: Date.parse(p.clocked_in), date, hours, role, wage: cents / 100 });
     }
     salariedByRemote.set(r.id, salaried);
