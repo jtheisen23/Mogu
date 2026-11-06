@@ -61,8 +61,7 @@ npm run dev                             # http://localhost:8787
 To test a restricted user, change `DEV_USER_EMAIL` in `.dev.vars` to `dt.manager@example.com`
 (a demo viewer who can only see Downtown) and restart `npm run dev`.
 
-The logo in the header (`public/logo.svg`) is a placeholder. Replace that file with the real logo,
-or add a PNG and point the two `logo` references in `public/index.html` at it.
+The header logo is `public/logo.webp` and the browser-tab icon is `public/favicon.png`.
 
 ## Production setup
 

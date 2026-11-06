@@ -17,6 +17,7 @@
   --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --radius: 10px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --logo-bg: transparent;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -27,6 +28,7 @@
     --accent: #3987e5; --good: #0ca30c; --bad: #e66767; --compare: #5f5e59;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --logo-bg: #f9f9f7;
   }
 }
 :root[data-theme="dark"] {
@@ -37,6 +39,7 @@
   --accent: #3987e5; --good: #0ca30c; --bad: #e66767; --compare: #5f5e59;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
   --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --logo-bg: #f9f9f7;
 }
 
 * { box-sizing: border-box; }
@@ -59,7 +62,7 @@ a { color: var(--accent); }
   position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; }
-.brand img { height: 48px; width: auto; display: block; }
+.brand img { height: 48px; width: auto; display: block; background: var(--logo-bg); border-radius: 8px; }
 .topbar-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
 .user-badge { font-size: 12px; color: var(--text-2); }
 .user-badge b { color: var(--text); font-weight: 600; }
