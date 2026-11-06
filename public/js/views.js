@@ -4,8 +4,8 @@
 
 import { barChart, lineChart } from './charts.js';
 import {
-  bucketLabel, bucketize, bucketsFor, change, dataTable, deltaNode, div, fmt, fmtRange, h,
-  ICON_DOWN, ICON_UP, sumBy, svgIcon, totals, WEEKDAYS,
+  bucketLabel, bucketize, bucketsFor, change, dataTable, deltaNode, div, eachDate, fmt, fmtDate, fmtRange, fmtWeekday, h,
+  ICON_DOWN, ICON_UP, sumBy, svgIcon, toDate, totals, WEEKDAYS,
 } from './util.js';
 
 // ---------------------------------------------------------------------------
@@ -732,7 +732,7 @@ export async function labor(ctx) {
   const locTable = dataTable({ columns: locCols, rows: locRows, total: locRows.length > 1 ? locTotal : null, sortKey: 'cost', filename: 'labor-by-location' });
 
   // Job table + chart. Rows arrive per (group, Toast job); jobs mapped to a
-  // role in Admin > Category groups roll up under it and expand.
+  // 7shifts role in Admin > Category groups roll up under it and expand.
   const jf = ['regular_hours', 'overtime_hours', 'regular_cost', 'overtime_cost'];
   const byGroup = sumBy(data.byJob.current, 'job_title', jf);
   const cmpByGroup = sumBy(data.byJob.compare, 'job_title', jf);
@@ -871,4 +871,301 @@ function renderItems(ctx, data) {
   );
   later(() => barChart(barEl, { categories: top.map((r) => r.item), series, horizontal: true, format: fmt.money, axisFormat: fmt.moneyShort }));
   return node;
+}
+
+// ---------------------------------------------------------------------------
+// 7shifts (users with the 7shifts permission): scheduled vs actual labor, upcoming schedule.
+// Toast labor needs labor access and sales figures sales access.
+// ---------------------------------------------------------------------------
+const shiftsState = { metric: 'hours' };
+
+export async function sevenShifts(ctx) {
+  const data = await ctx.api('/api/sevenshifts');
+  const ids = ctx.q.locations;
+  const sf = ['hours', 'cost', 'shifts', 'open_shifts', 'open_hours'];
+  const hasActual = !!data.actual;
+  const hasSales = !!data.sales;
+  const S = totals(data.scheduled, sf);
+  const A = hasActual ? totals(data.actual, ['hours', 'cost']) : null;
+  const N = hasSales ? totals(data.sales, ['net_sales']) : null;
+  const variance = (a, s) => (a !== null && s !== null ? a - s : null);
+
+  if (!data.sync.length) {
+    return h('div', { class: 'notice' }, 'No 7shifts schedule has been loaded for these locations yet.');
+  }
+
+  const tiles = [
+    kpi('Scheduled hours', S.hours, null, { format: fmt.int }),
+    hasActual && kpi('Actual hours (Toast)', A.hours, null, { format: fmt.int }),
+    hasActual && kpi('Hours over schedule', variance(A.hours, S.hours), null, { format: (v) => (v === null ? '—' : `${v > 0 ? '+' : ''}${fmt.int(v)}`) }),
+    kpi('Scheduled labor $', S.cost, null, { format: fmt.money }),
+    hasActual && kpi('Actual labor $', A.cost, null, { format: fmt.money }),
+    hasSales && kpi('Scheduled labor %', div(S.cost, N.net_sales), null, { format: fmt.pct }),
+    hasSales && hasActual && kpi('Actual labor %', div(A.cost, N.net_sales), null, { format: fmt.pct }),
+  ].filter(Boolean);
+
+  // Daily scheduled vs actual
+  const days = eachDate(ctx.q.current.start, ctx.q.current.end);
+  const sumDay = (rows, field) => {
+    const m = new Map();
+    for (const r of rows) m.set(r.business_date, (m.get(r.business_date) || 0) + (r[field] || 0));
+    return m;
+  };
+  const dailyEl = chartBox(true);
+  const drawDaily = () => {
+    window.echarts.getInstanceByDom(dailyEl)?.dispose();
+    const f = shiftsState.metric;
+    const sm = sumDay(data.scheduled, f);
+    const am = hasActual ? sumDay(data.actual, f) : null;
+    const money = f === 'cost';
+    barChart(dailyEl, {
+      categories: days.map((d) => `${fmtWeekday(d)} ${fmtDate(d)}`),
+      series: [
+        { name: 'Scheduled (7shifts)', color: 'compare', data: days.map((d) => sm.get(d) ?? null) },
+        ...(am ? [{ name: 'Actual (Toast)', colorIndex: 0, data: days.map((d) => am.get(d) ?? null) }] : []),
+      ],
+      format: money ? fmt.money : fmt.dec1,
+      axisFormat: money ? fmt.moneyShort : fmt.int,
+    });
+  };
+  const metricSeg = seg([['hours', 'Hours'], ['cost', 'Labor $']], shiftsState.metric, (v) => { shiftsState.metric = v; drawDaily(); });
+
+  // By location
+  const sl = sumBy(data.scheduled, 'location_id', sf);
+  const al = hasActual ? sumBy(data.actual, 'location_id', ['hours', 'cost']) : new Map();
+  const nl = hasSales ? sumBy(data.sales, 'location_id', ['net_sales']) : new Map();
+  const locRow = (id, s, a, n) => ({
+    id,
+    sHours: s?.hours ?? 0,
+    aHours: a?.hours ?? 0,
+    vHours: (a?.hours ?? 0) - (s?.hours ?? 0),
+    vPct: div((a?.hours ?? 0) - (s?.hours ?? 0), s?.hours),
+    sCost: s?.cost ?? 0,
+    aCost: a?.cost ?? 0,
+    vCost: (a?.cost ?? 0) - (s?.cost ?? 0),
+    sPct: div(s?.cost, n?.net_sales),
+    aPct: div(a?.cost, n?.net_sales),
+    open: s?.open_shifts ?? 0,
+  });
+  const signed = (f) => (v) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${f(v)}`);
+  const overCls = (v) => h('span', { class: v > 0.5 ? 'neg' : v < -0.5 ? 'pos' : '' }, signed(fmt.dec1)(v));
+  const locRows = ids.map((id) => locRow(id, sl.get(id), al.get(id), nl.get(id)));
+  const locCols = [
+    { key: 'id', label: 'Location', text: true, value: (r) => (r.id ? ctx.loc(r.id).name : 'All selected'), render: (r) => (r.id ? locCell(ctx, r.id) : 'All selected') },
+    { key: 'sHours', label: 'Sched hrs', fmt: fmt.int },
+    hasActual && { key: 'aHours', label: 'Actual hrs', fmt: fmt.int },
+    hasActual && { key: 'vHours', label: 'Hrs over', render: (r) => overCls(r.vHours) },
+    hasActual && { key: 'vPct', label: '% over', fmt: (v) => (v === null ? '—' : fmt.signedPct(v)) },
+    { key: 'sCost', label: 'Sched $', fmt: fmt.money },
+    hasActual && { key: 'aCost', label: 'Actual $', fmt: fmt.money },
+    hasActual && { key: 'vCost', label: '$ over', fmt: signed(fmt.money) },
+    hasSales && { key: 'sPct', label: 'Sched labor %', fmt: fmt.pct },
+    hasSales && hasActual && { key: 'aPct', label: 'Actual labor %', fmt: fmt.pct },
+    { key: 'open', label: 'Open shifts', fmt: fmt.int },
+  ].filter(Boolean);
+  const locTable = dataTable({
+    columns: locCols,
+    rows: locRows,
+    total: locRows.length > 1 ? { ...locRow(null, S, A, N), id: null } : null,
+    sortKey: hasActual ? 'aHours' : 'sHours',
+    filename: 'scheduled-vs-actual-by-location',
+  });
+
+  // By role. Toast jobs count toward the 7shifts role they're mapped to in
+  // Admin > Category groups > Labor jobs (else matched by name) and expand.
+  const key = (n) => String(n || '').trim().toLowerCase();
+  const roles = new Map();
+  for (const r of data.schedRoles) roles.set(key(r.name), { name: r.name, sHours: r.hours, sCost: r.cost, aHours: null, aCost: null, jobs: [] });
+  for (const j of data.actualJobs || []) {
+    let e = roles.get(key(j.name));
+    if (!e) roles.set(key(j.name), (e = { name: j.name, sHours: null, sCost: null, aHours: null, aCost: null, jobs: [] }));
+    e.aHours = (e.aHours ?? 0) + j.hours;
+    e.aCost = (e.aCost ?? 0) + j.cost;
+    e.jobs.push(j);
+  }
+  const roleRows = [...roles.values()].map(({ jobs, ...r }) => {
+    const row = {
+      ...r,
+      vHours: r.sHours !== null && r.aHours !== null ? r.aHours - r.sHours : null,
+      source: r.sHours === null ? 'Toast only' : r.aHours === null ? '7shifts only' : 'Both',
+    };
+    if (jobs.length > 1 || (jobs.length === 1 && key(jobs[0].source_name) !== key(r.name))) {
+      row.children = jobs
+        .map((j) => ({ name: j.source_name, sHours: null, sCost: null, aHours: j.hours, aCost: j.cost, vHours: null, source: 'Toast job' }))
+        .sort((a, b) => b.aHours - a.aHours);
+    }
+    return row;
+  });
+  const unmapped = hasActual ? roleRows.filter((r) => r.source === 'Toast only').length : 0;
+  const roleTable = dataTable({
+    columns: [
+      { key: 'name', label: 'Role / job', text: true },
+      { key: 'sHours', label: 'Sched hrs', fmt: fmt.int },
+      hasActual && { key: 'aHours', label: 'Actual hrs', fmt: fmt.int },
+      hasActual && { key: 'vHours', label: 'Hrs over', render: (r) => (r.vHours === null ? '—' : overCls(r.vHours)) },
+      { key: 'sCost', label: 'Sched $', fmt: fmt.money },
+      hasActual && { key: 'aCost', label: 'Actual $', fmt: fmt.money },
+      hasActual && { key: 'source', label: 'In', text: true },
+    ].filter(Boolean),
+    rows: roleRows,
+    sortKey: hasActual ? 'aHours' : 'sHours',
+    filename: 'scheduled-vs-actual-by-role',
+  });
+
+  // Upcoming two weeks
+  const upDays = eachDate(data.today, data.upcomingEnd);
+  const upMap = new Map(data.upcoming.map((r) => [`${r.business_date}|${r.location_id}`, r]));
+  const wk = new Map((data.weekdaySales || []).map((r) => [`${r.location_id}|${r.weekday}`, r.net_sales]));
+  const upRows = upDays.map((d) => {
+    const wd = toDate(d).getUTCDay();
+    const row = { date: d, hours: 0, cost: 0, open: 0, sales: 0, hasSales: false };
+    for (const id of ids) {
+      const u = upMap.get(`${d}|${id}`);
+      row[`h_${id}`] = u?.hours ?? 0;
+      row.hours += u?.hours ?? 0;
+      row.cost += u?.cost ?? 0;
+      row.open += u?.open_shifts ?? 0;
+      const f = wk.get(`${id}|${wd}`);
+      if (f) { row.sales += f; row.hasSales = true; }
+    }
+    row.sales = row.hasSales ? row.sales : null;
+    row.laborPct = div(row.cost, row.sales);
+    return row;
+  });
+  const upCols = [
+    { key: 'date', label: 'Day', text: true, value: (r) => r.date, render: (r) => (/^\d{4}-/.test(r.date) ? `${fmtWeekday(r.date)} ${fmtDate(r.date)}` : r.date) },
+  ];
+  if (ids.length > 1) for (const id of ids) upCols.push({ key: `h_${id}`, label: `${ctx.loc(id).name} hrs`, fmt: fmt.int });
+  upCols.push(
+    { key: 'hours', label: 'Sched hrs', fmt: fmt.int },
+    { key: 'cost', label: 'Sched $', fmt: fmt.money },
+    hasSales && { key: 'sales', label: 'Projected sales', fmt: fmt.money },
+    hasSales && { key: 'laborPct', label: 'Projected labor %', fmt: fmt.pct },
+    { key: 'open', label: 'Open shifts', fmt: fmt.int },
+  );
+  upCols.splice(0, upCols.length, ...upCols.filter(Boolean));
+  const upTot = totals(upRows, ['hours', 'cost', 'open', 'sales']);
+  const upTable = dataTable({
+    columns: upCols,
+    rows: upRows,
+    total: { date: 'Next 14 days', ...upTot, laborPct: div(upTot.cost, upTot.sales), ...Object.fromEntries(ids.map((id) => [`h_${id}`, upRows.reduce((s, r) => s + r[`h_${id}`], 0)])) },
+    sortKey: 'date',
+    sortDir: 'asc',
+    filename: 'upcoming-schedule',
+  });
+  const upEl = chartBox();
+
+  const synced = data.sync.map((r) => r.synced_at).sort().pop();
+  const node = h('div', {},
+    h('div', { class: 'notice' },
+      `Scheduled = published 7shifts shifts (open shifts counted separately).${hasActual ? ' Actual = Toast time entries. Register is left out of both.' : ''} Last 7shifts sync ${new Date(synced).toLocaleString()}.`),
+    h('div', { class: 'grid kpis' }, tiles),
+    card(hasActual ? 'Scheduled vs actual by day' : 'Scheduled by day', fmtRange(ctx.q.current), metricSeg, dailyEl),
+    card('By location', fmtRange(ctx.q.current), csvButton(() => locTable), locTable.el),
+    card('By role', hasActual ? `${fmtRange(ctx.q.current)} · Toast jobs roll up under the 7shifts role they're mapped to` : fmtRange(ctx.q.current), csvButton(() => roleTable), 
+      unmapped && ctx.user.isAdmin ? h('div', { class: 'notice' }, `${unmapped} Toast job${unmapped === 1 ? ' isn\'t' : 's aren\'t'} mapped to a 7shifts role yet. Map them in Admin → Category groups → Labor jobs.`) : null,
+      roleTable.el),
+    await logBookCard(ctx),
+    card('Upcoming schedule', hasSales ? 'Next 14 days · projected sales = average of the same weekday over the last 4 weeks' : 'Next 14 days', csvButton(() => upTable), upEl, upTable.el),
+  );
+  later(() => {
+    drawDaily();
+    barChart(upEl, {
+      categories: upDays.map((d) => `${fmtWeekday(d)} ${fmtDate(d)}`),
+      series: ids.map((id) => ({ name: ctx.loc(id).name, colorIndex: ctx.loc(id).colorIndex, data: upRows.map((r) => r[`h_${id}`]) })),
+      stack: true,
+      format: fmt.dec1,
+      axisFormat: fmt.int,
+    });
+  });
+  return node;
+}
+
+// ---------------------------------------------------------------------------
+// 7shifts log book (each user's assigned locations)
+// ---------------------------------------------------------------------------
+const logState = { locs: null, category: '', search: '', files: false, shown: 100 };
+
+/** Thumbnails for images, links for other files; both open the file in a new tab. */
+function attachmentsRow(p) {
+  return h('div', { class: 'log-files' }, p.attachments.map((a) => {
+    const href = `/api/logbook/file?post=${encodeURIComponent(p.id)}&i=${a.i}`;
+    return h('a', { href, target: '_blank', rel: 'noopener', title: a.name, class: a.image ? 'log-thumb' : 'log-file' },
+      a.image ? h('img', { src: href, alt: a.name, loading: 'lazy' }) : `📎 ${a.name}`);
+  }));
+}
+
+async function logBookCard(ctx) {
+  const body = h('div');
+  const status = h('span', { class: 'muted small' });
+  const params = (locs) => ({ locations: locs.join(',') });
+  let data = await ctx.api('/api/logbook', params(logState.locs || []));
+  logState.locs ??= data.locations.map((l) => l.id);
+
+  const chipRow = h('div', { class: 'chips' });
+  const drawChips = () => chipRow.replaceChildren(...data.locations.map((l) => {
+    const on = logState.locs.includes(l.id);
+    return h('button', {
+      type: 'button',
+      class: 'chip',
+      'aria-pressed': String(on),
+      onclick: async () => {
+        logState.locs = on ? logState.locs.filter((x) => x !== l.id) : [...logState.locs, l.id];
+        drawChips();
+        if (!logState.locs.length) { data = { ...data, posts: [] }; draw(); return; }
+        status.textContent = 'Loading…';
+        data = await ctx.api('/api/logbook', params(logState.locs));
+        status.textContent = '';
+        draw();
+      },
+    }, h('span', { class: 'dot', style: { '--dot': `var(--s${(ctx.loc(l.id).colorIndex % 8) + 1})` } }), l.name);
+  }));
+
+  const catSelect = h('select', { 'aria-label': 'Category', onchange: () => { logState.category = catSelect.value; logState.shown = 100; draw(); } });
+  const search = h('input', { type: 'text', placeholder: 'Search notes', value: logState.search, 'aria-label': 'Search log book' });
+  const filesOnly = h('input', { type: 'checkbox', checked: logState.files, onchange: () => { logState.files = filesOnly.checked; logState.shown = 100; draw(); } });
+  const filesLabel = h('label', { class: 'checks small', style: { gap: '6px' } }, filesOnly, 'Has attachments');
+  let t;
+  search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { logState.search = search.value; logState.shown = 100; draw(); }, 200); });
+
+  const nameOf = new Map(data.locations.map((l) => [l.id, l.name]));
+  const para = (text) => h('div', { class: 'log-msg' }, text);
+
+  function draw() {
+    const cats = [...new Set(data.posts.map((p) => p.category))].sort();
+    catSelect.replaceChildren(h('option', { value: '' }, 'All categories'), ...cats.map((c) => h('option', { value: c, selected: c === logState.category }, c)));
+    const q = logState.search.trim().toLowerCase();
+    const posts = data.posts.filter((p) =>
+      (!logState.category || p.category === logState.category) &&
+      (!logState.files || p.attachment_count > 0) &&
+      (!q || `${p.message} ${p.author} ${p.category} ${p.comments.map((c) => c.message).join(' ')}`.toLowerCase().includes(q)));
+    const shown = posts.slice(0, logState.shown);
+    const groups = [];
+    for (const p of shown) {
+      const k = `${p.business_date}|${p.location_id}`;
+      if (groups.at(-1)?.k !== k) groups.push({ k, date: p.business_date, loc: p.location_id, posts: [] });
+      groups.at(-1).posts.push(p);
+    }
+    body.replaceChildren(...[
+      posts.length ? null : h('div', { class: 'muted', style: { padding: '12px 0' } }, 'No log book entries for these dates and filters.'),
+      ...groups.map((g) => h('div', { class: 'log-day' },
+        h('div', { class: 'log-day-head' }, h('b', {}, `${fmtWeekday(g.date)} ${fmtDate(g.date)}`), ' · ', nameOf.get(g.loc) || g.loc),
+        ...g.posts.map((p) => h('div', { class: 'log-post' },
+          h('div', { class: 'log-meta' },
+            h('span', { class: 'pill on' }, p.category),
+            p.author ? h('span', { class: 'muted small' }, p.author) : null,
+            p.attachment_count && !p.attachments?.length ? h('span', { class: 'muted small' }, `📎 ${p.attachment_count}`) : null),
+          para(p.message),
+          p.attachments?.length ? attachmentsRow(p) : null,
+          ...p.comments.map((c) => h('div', { class: 'log-comment' }, h('span', { class: 'muted small' }, `${c.author || 'Comment'}: `), c.message)))))),
+      posts.length > shown.length
+        ? h('button', { class: 'btn', type: 'button', style: { marginTop: '8px' }, onclick: () => { logState.shown += 200; draw(); } }, `Show more (${posts.length - shown.length} left)`)
+        : null,
+      data.truncated ? h('div', { class: 'muted small', style: { marginTop: '8px' } }, 'Showing the latest 3,000 entries; pick a shorter date range to see older ones.') : null,
+    ].filter(Boolean));
+  }
+  drawChips();
+  draw();
+  return card('Log book', `${fmtRange(ctx.q.current)} · from 7shifts`, [filesLabel, catSelect, search, status],
+    h('div', { style: { margin: '0 0 12px' } }, chipRow), body);
 }

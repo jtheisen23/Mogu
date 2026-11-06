@@ -287,3 +287,136 @@ export async function locations(env, user) {
   }
   return { locations: results };
 }
+
+const shiftDate = (s, n) => {
+  const d = new Date(`${s}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+/**
+ * 7shifts tab (users with the 7shifts permission, for their own locations): scheduled labor
+ * (7shifts) against actual labor and sales (Toast) for the selected period,
+ * plus the next 14 days of schedule with a sales projection from the last 4
+ * weeks' same-weekday average. Toast labor needs the labor section and sales
+ * figures the sales section, as on the other tabs.
+ */
+export async function sevenShifts(env, url, user) {
+  requireSection(user, 'sevenshifts');
+  const q = readQuery(url, user);
+  const today = easternDate.format(new Date());
+  const upEnd = shiftDate(today, 13);
+  const histStart = shiftDate(today, -28);
+  const inList = q.locations.map(() => '?').join(',');
+  const binds = (start, end) => [start, end, ...q.locations];
+  const { start, end } = q.current;
+  const stmt = (sql, b) => env.DB.prepare(sql.replaceAll('{LOCATIONS}', inList)).bind(...b);
+
+  const res = await env.DB.batch([
+    stmt(`SELECT business_date, location_id, SUM(hours) AS hours, SUM(cost) AS cost, SUM(shifts) AS shifts,
+                 SUM(open_shifts) AS open_shifts, SUM(open_hours) AS open_hours
+            FROM scheduled_labor WHERE ${RANGE} GROUP BY business_date, location_id ORDER BY business_date`, binds(start, end)),
+    stmt(`SELECT business_date, location_id, SUM(regular_hours + overtime_hours) AS hours, SUM(regular_cost + overtime_cost) AS cost
+            FROM labor_daily WHERE ${LABOR_RANGE} GROUP BY business_date, location_id ORDER BY business_date`, binds(start, end)),
+    stmt(`SELECT business_date, location_id, net_sales FROM daily_sales WHERE ${RANGE} ORDER BY business_date`, binds(start, end)),
+    stmt(`SELECT role AS name, SUM(hours) AS hours, SUM(cost) AS cost, SUM(shifts) AS shifts
+            FROM scheduled_labor WHERE ${RANGE} GROUP BY role`, binds(start, end)),
+    stmt(`SELECT COALESCE(g.group_name, l.job_title) AS name, l.job_title AS source_name,
+                 SUM(regular_hours + overtime_hours) AS hours, SUM(regular_cost + overtime_cost) AS cost
+            FROM labor_daily l LEFT JOIN category_groups g ON g.dimension = 'labor_job' AND g.source_label = l.job_title
+           WHERE ${LABOR_RANGE} GROUP BY COALESCE(g.group_name, l.job_title), l.job_title`, binds(start, end)),
+    stmt(`SELECT business_date, location_id, SUM(hours) AS hours, SUM(cost) AS cost, SUM(shifts) AS shifts,
+                 SUM(open_shifts) AS open_shifts, SUM(open_hours) AS open_hours
+            FROM scheduled_labor WHERE ${RANGE} GROUP BY business_date, location_id ORDER BY business_date`, binds(today, upEnd)),
+    stmt(`SELECT location_id, CAST(strftime('%w', business_date) AS INTEGER) AS weekday, AVG(net_sales) AS net_sales
+            FROM daily_sales WHERE ${RANGE} GROUP BY location_id, weekday`, binds(histStart, shiftDate(today, -1))),
+    stmt(`SELECT location_id, synced_at, first_date, last_date FROM schedule_sync WHERE location_id IN ({LOCATIONS})`, q.locations),
+  ]);
+  const [scheduled, actual, sales, schedRoles, actualJobs, upcoming, weekdaySales, sync] = res.map((r) => r.results);
+  return {
+    query: q,
+    today,
+    upcomingEnd: upEnd,
+    scheduled,
+    actual: user.sections.labor ? actual : null,
+    sales: user.sections.sales ? sales : null,
+    schedRoles,
+    actualJobs: user.sections.labor ? actualJobs : null,
+    upcoming,
+    weekdaySales: user.sections.sales ? weekdaySales : null,
+    sync,
+  };
+}
+
+const LOG_BOOK_LIMIT = 3000;
+
+/** 7shifts log book entries for a date range, for the user's assigned locations. */
+export async function logBook(env, url, user) {
+  requireSection(user, 'sevenshifts');
+  const q = readQuery(url, user);
+  const { results: all } = await env.DB.prepare(
+    `SELECT id, name FROM locations WHERE id IN (${user.locations.map(() => '?').join(',')}) ORDER BY sort_order, name`,
+  )
+    .bind(...user.locations)
+    .all();
+  const locs = q.locations;
+  const { results } = await env.DB.prepare(
+    `SELECT id, location_id, business_date, category, author, message, comments, attachment_count, attachments, created
+       FROM log_book_posts
+      WHERE business_date BETWEEN ? AND ? AND location_id IN (${locs.map(() => '?').join(',')})
+      ORDER BY business_date DESC, location_id, category
+      LIMIT ${LOG_BOOK_LIMIT + 1}`,
+  )
+    .bind(q.current.start, q.current.end, ...locs)
+    .all();
+  const truncated = results.length > LOG_BOOK_LIMIT;
+  const posts = results.slice(0, LOG_BOOK_LIMIT).map((r) => {
+    let comments = [];
+    let files = [];
+    try { comments = JSON.parse(r.comments || '[]'); } catch { /* keep empty */ }
+    try { files = JSON.parse(r.attachments || '[]'); } catch { /* keep empty */ }
+    // File paths stay server-side; the page asks for /api/logbook/file?post=&i=.
+    return { ...r, comments, attachments: files.map((f, i) => ({ i, name: f.name, image: IMAGE_EXT.test(f.name) })) };
+  });
+  return { locations: all, posts, truncated };
+}
+
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp)$/i;
+const SAFE_INLINE = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/;
+const FILE_HOST = 'files.7shifts.com';
+
+/**
+ * Streams one log book attachment from 7shifts, adding the 7shifts token
+ * (Worker secret SEVENSHIFTS_ACCESS_TOKEN). Only for users assigned to the
+ * post's location. Images and PDFs open inline; anything else downloads.
+ */
+export async function logBookFile(env, url, user) {
+  requireSection(user, 'sevenshifts');
+  const postId = Number(url.searchParams.get('post'));
+  const index = Number(url.searchParams.get('i'));
+  if (!Number.isInteger(postId) || !Number.isInteger(index) || index < 0) throw new HttpError(400, 'Bad attachment');
+  const row = await env.DB.prepare('SELECT location_id, attachments FROM log_book_posts WHERE id = ?').bind(postId).first();
+  if (!row || !user.locations.includes(row.location_id)) throw new HttpError(404, 'Not found');
+  let files = [];
+  try { files = JSON.parse(row.attachments || '[]'); } catch { /* none */ }
+  const file = files[index];
+  if (!file) throw new HttpError(404, 'Not found');
+  const target = new URL(file.path);
+  if (target.protocol !== 'https:' || target.host !== FILE_HOST) throw new HttpError(404, 'Not found');
+  if (!env.SEVENSHIFTS_ACCESS_TOKEN) throw new HttpError(503, 'Attachments need the SEVENSHIFTS_ACCESS_TOKEN Worker secret');
+
+  const upstream = await fetch(target, { headers: { Authorization: `Bearer ${env.SEVENSHIFTS_ACCESS_TOKEN}` } });
+  if (!upstream.ok) throw new HttpError(upstream.status === 404 ? 404 : 502, `7shifts returned ${upstream.status} for this file`);
+  const type = (upstream.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+  const inline = SAFE_INLINE.test(type);
+  const name = String(file.name || 'attachment').replace(/["\\\r\n]/g, '_');
+  return new Response(upstream.body, {
+    headers: {
+      'Content-Type': inline ? type : 'application/octet-stream',
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${name}"`,
+      'Cache-Control': 'private, max-age=3600',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+    },
+  });
+}

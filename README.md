@@ -150,6 +150,19 @@ also finish the previous day. They need a Worker **secret** `GITHUB_DISPATCH_TOK
 token limited to this repository with **Actions: Read and write** permission. GitHub's own
 schedule keeps only the 8:40 UTC 7-day re-sync as a backup.
 
+**7shifts:** the *7shifts* tab (users with the **7shifts** box ticked in Admin, for their own locations; Toast labor and sales figures follow the Labor and Sales permissions) compares scheduled labor from 7shifts with actual
+labor from Toast and shows the next 14 days of schedule. Add a GitHub secret
+`SEVENSHIFTS_ACCESS_TOKEN` (7shifts → Settings → Developer tools → Access tokens); each Toast sync
+then also loads published shifts for the last few days and the next 14. Run *Actions → 7shifts
+connection check* to confirm the token, how 7shifts locations match the dashboard's, and what a
+week of time punches looks like (names are matched; add `"sevenShiftsId": <id>` to a location in `LOCATIONS_JSON` to pin one). File Toast jobs
+under 7shifts roles in *Admin → Category groups → Labor jobs*; the Labor and 7shifts tabs then group
+jobs by role (each role expands to its jobs). The tab also has a **Log book** section with every
+7shifts log book entry for the user's assigned locations, filterable by location, category and
+text. Each sync refreshes recent days; run *Toast sync* with *logbook_all* ticked to reload all history.
+Attachments open through the Worker, which needs the same token as a Worker **secret**
+`SEVENSHIFTS_ACCESS_TOKEN` (Workers & Pages → mogu → Settings → Variables and Secrets).
+
 > GitHub pauses scheduled workflows after 60 days with no activity in the repo. If that happens,
 > re-enable the workflow from the Actions tab.
 

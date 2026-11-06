@@ -13,6 +13,7 @@ const TABS = [
   { id: 'discounts', label: 'Discounts & comps', section: 'discounts', render: views.discounts },
   { id: 'labor', label: 'Labor', section: 'labor', render: views.labor },
   { id: 'items', label: 'Menu items', section: 'items', render: views.items },
+  { id: 'sevenshifts', label: '7shifts', section: 'sevenshifts', render: views.sevenShifts },
   { id: 'admin', label: 'Admin', admin: true, render: adminView },
 ];
 

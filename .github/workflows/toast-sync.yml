@@ -21,8 +21,12 @@ on:
       locations:
         description: 'Comma-separated location ids (e.g. AA,BB). Empty = all.'
         required: false
+      logbook_all:
+        description: 'Also reload the entire 7shifts log book history (one-time)'
+        type: boolean
+        default: false
       revenue_centers_only:
-        description: 'Only rewrite revenue center sales for the dates (cheap re-pull; skips labor)'
+        description: 'Only rewrite revenue center sales for the dates (cheap re-pull; skips labor and 7shifts)'
         type: boolean
         default: false
 
@@ -82,3 +86,36 @@ jobs:
           [ -n "$IN_LOCATIONS" ] && args+=(--locations "$IN_LOCATIONS")
           [ "$IN_REVENUE_CENTERS_ONLY" = "true" ] && args+=(--revenue-centers-only)
           node etl/src/index.js "${args[@]}"
+      # Scheduled labor from 7shifts (7shifts tab). Skipped until the
+      # SEVENSHIFTS_ACCESS_TOKEN secret is added; runs even if the Toast step failed.
+      - name: Sync 7shifts schedule into D1
+        if: ${{ !cancelled() && !inputs.revenue_centers_only }}
+        env:
+          SEVENSHIFTS_ACCESS_TOKEN: ${{ secrets.SEVENSHIFTS_ACCESS_TOKEN }}
+          LOCATIONS_JSON: ${{ secrets.LOCATIONS_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          IN_START: ${{ inputs.start }}
+          IN_END: ${{ inputs.end }}
+          IN_DAYS: ${{ inputs.days }}
+          IN_LOGBOOK_ALL: ${{ inputs.logbook_all }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ -z "$SEVENSHIFTS_ACCESS_TOKEN" ]; then
+            echo "SEVENSHIFTS_ACCESS_TOKEN is not set; skipping 7shifts."
+            exit 0
+          fi
+          args=()
+          if [ -n "$IN_START" ]; then
+            args+=(--start "$IN_START")
+            [ -n "$IN_END" ] && args+=(--end "$IN_END")
+          elif [[ "$IN_DAYS" =~ ^[0-9]{1,2}$ ]]; then
+            args+=(--days "$IN_DAYS")
+          elif [ "$SCHEDULE" = "40 8 * * *" ]; then
+            args+=(--days 7)
+          else
+            args+=(--days 2)
+          fi
+          [ "$IN_LOGBOOK_ALL" = "true" ] && args+=(--logbook-all)
+          node etl/src/sevenshifts-sync.js "${args[@]}"

@@ -62,11 +62,11 @@ export async function saveUser(env, user, body) {
 
   const stmts = [
     env.DB.prepare(
-      `INSERT INTO users (email, name, role, all_locations, can_sales, can_discounts, can_labor, can_items, active, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO users (email, name, role, all_locations, can_sales, can_discounts, can_labor, can_items, can_sevenshifts, active, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(email) DO UPDATE SET name=excluded.name, role=excluded.role, all_locations=excluded.all_locations,
          can_sales=excluded.can_sales, can_discounts=excluded.can_discounts, can_labor=excluded.can_labor,
-         can_items=excluded.can_items, active=excluded.active, updated_at=excluded.updated_at`,
+         can_items=excluded.can_items, can_sevenshifts=excluded.can_sevenshifts, active=excluded.active, updated_at=excluded.updated_at`,
     ).bind(
       email,
       name,
@@ -76,6 +76,7 @@ export async function saveUser(env, user, body) {
       sections.discounts ? 1 : 0,
       sections.labor ? 1 : 0,
       sections.items ? 1 : 0,
+      sections.sevenshifts ? 1 : 0,
       active ? 1 : 0,
     ),
     env.DB.prepare('DELETE FROM user_locations WHERE email = ?').bind(email),
@@ -127,18 +128,19 @@ export async function listGroups(env, user, url) {
   // Discounts live in their own table; the others in sales_mix. Either way the
   // amount column is last-12-month dollars (net sales, or discount amount).
   if (dimension === 'labor_job') {
-    // Toast jobs, to be grouped into roles (e.g. "Wok Cook" and "Fry Cook" -> "Kitchen").
-    const { results } = await env.DB.prepare(
-      `SELECT l.job_title AS label, ROUND(SUM(l.regular_cost + l.overtime_cost), 2) AS net_sales, MAX(l.business_date) AS last_seen, g.group_name
-         FROM labor_daily l
-         LEFT JOIN category_groups g ON g.dimension = 'labor_job' AND g.source_label = l.job_title
-        WHERE l.business_date >= date('now', '-365 days')
-          AND LOWER(TRIM(l.job_title)) NOT IN (${EXCLUDED_JOBS.map(() => '?').join(',')})
-        GROUP BY l.job_title ORDER BY net_sales DESC`,
-    )
-      .bind(...EXCLUDED_JOBS)
-      .all();
-    return { dimension, labels: results };
+    // Labor jobs, to be grouped into roles; 7shifts roles are offered as suggestions.
+    const [jobs, roles] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT l.job_title AS label, ROUND(SUM(l.regular_cost + l.overtime_cost), 2) AS net_sales, MAX(l.business_date) AS last_seen, g.group_name
+           FROM labor_daily l
+           LEFT JOIN category_groups g ON g.dimension = 'labor_job' AND g.source_label = l.job_title
+          WHERE l.business_date >= date('now', '-365 days')
+            AND LOWER(TRIM(l.job_title)) NOT IN (${EXCLUDED_JOBS.map(() => '?').join(',')})
+          GROUP BY l.job_title ORDER BY net_sales DESC`,
+      ).bind(...EXCLUDED_JOBS),
+      env.DB.prepare('SELECT DISTINCT role FROM scheduled_labor ORDER BY role'),
+    ]);
+    return { dimension, labels: jobs.results, suggestions: roles.results.map((r) => r.role) };
   }
   const stmt =
     dimension === 'discount'

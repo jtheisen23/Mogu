@@ -2,7 +2,7 @@
 
 import { fmt, h } from './util.js';
 
-const SECTION_LABELS = { sales: 'Sales', discounts: 'Discounts & comps', labor: 'Labor', items: 'Menu items' };
+const SECTION_LABELS = { sales: 'Sales', discounts: 'Discounts & comps', labor: 'Labor', items: 'Menu items', sevenshifts: '7shifts' };
 
 // Result of the Cloudflare Access update from the last save/remove, shown once
 // after the page re-renders.
@@ -68,7 +68,7 @@ export async function adminView(ctx) {
 
 function userForm(ctx, data, u, onSaved, onCancel) {
   const isNew = !u;
-  u = u || { email: '', name: '', role: 'viewer', active: true, allLocations: false, locations: [], sections: { sales: true, discounts: false, labor: false, items: true } };
+  u = u || { email: '', name: '', role: 'viewer', active: true, allLocations: false, locations: [], sections: { sales: true, discounts: false, labor: false, items: true, sevenshifts: false } };
   const err = h('div', { class: 'error', style: { padding: '8px 0', textAlign: 'left' } });
 
   const email = h('input', { type: 'email', value: u.email, required: true, disabled: !isNew, placeholder: 'name@example.com' });
@@ -180,10 +180,12 @@ async function groupsCard(ctx) {
     // Refreshed only when a box loses focus, never while typing.
     let lastFocused = null;
     const chips = h('div', { class: 'chips', style: { margin: '4px 0 10px' } });
+    // Labor jobs also offer the 7shifts roles, so jobs can be filed under them.
+    const suggestions = data.suggestions || [];
     const refreshChips = () => {
-      const names = [...new Set(inputs.map((i) => i.input.value.trim()).filter(Boolean))].sort();
+      const names = [...new Set([...suggestions, ...inputs.map((i) => i.input.value.trim()).filter(Boolean)])].sort();
       chips.replaceChildren(
-        ...(names.length ? [h('span', { class: 'muted small', style: { alignSelf: 'center' } }, 'Existing groups:')] : []),
+        ...(names.length ? [h('span', { class: 'muted small', style: { alignSelf: 'center' } }, suggestions.length ? 'Groups and 7shifts roles:' : 'Existing groups:')] : []),
         ...names.map((n) => h('button', {
           type: 'button',
           class: 'chip',
@@ -263,7 +265,7 @@ async function groupsCard(ctx) {
     h('div', { class: 'card-head' },
       h('div', {},
         h('h2', {}, 'Category groups'),
-        h('div', { class: 'sub' }, 'Combine Toast names into one reporting group — e.g. type "Beer" next to Draft, Draft Beer and HH Draft, or "Manager Comps" next to each manager comp discount. Labor jobs: file each Toast job under a role (e.g. Wok Cook, Prep Cook and Dishwasher under "Kitchen") and the Labor tab rolls them up. Leave blank to keep a name as is. Applies to all dates instantly; Toast data is not changed.')),
+        h('div', { class: 'sub' }, 'Combine Toast names into one reporting group — e.g. type "Beer" next to Draft, Draft Beer and HH Draft, or "Manager Comps" next to each manager comp discount. Labor jobs: file each job under a 7shifts role (e.g. Wok Cook, Prep Cook and Dishwasher under "Kitchen") so the Labor and 7shifts tabs compare like with like. Leave blank to keep a name as is. Applies to all dates instantly; Toast data is not changed.')),
       h('div', { class: 'seg', role: 'group' }, buttons)),
     body);
 }

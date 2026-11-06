@@ -1,0 +1,26 @@
+name: 7shifts connection check
+
+# Read-only: lists the company, locations (and how they match the dashboard's),
+# roles, two weeks of shifts and one week of time punches per location.
+# Writes nothing. The report appears in the run's summary; it contains no
+# employee names.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check 7shifts access
+        env:
+          SEVENSHIFTS_ACCESS_TOKEN: ${{ secrets.SEVENSHIFTS_ACCESS_TOKEN }}
+          LOCATIONS_JSON: ${{ secrets.LOCATIONS_JSON }}
+        run: node etl/src/sevenshifts-sync.js --check
