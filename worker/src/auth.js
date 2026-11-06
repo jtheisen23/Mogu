@@ -114,7 +114,7 @@ async function identify(request, env) {
   return String(claims.email).toLowerCase();
 }
 
-function bootstrapAdmins(env) {
+export function bootstrapAdmins(env) {
   return new Set(
     String(env.BOOTSTRAP_ADMINS || '')
       .split(',')

@@ -1,7 +1,8 @@
 // User management for admins: who can see which locations and sections.
 
-import { HttpError, requireAdmin, SECTIONS } from './auth.js';
+import { bootstrapAdmins, HttpError, requireAdmin, SECTIONS } from './auth.js';
 import { EXCLUDED_JOBS, MIX_DIMENSIONS } from './api.js';
+import { accessSyncConfigured, syncAccessPolicy } from './access-policy.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -30,11 +31,16 @@ export async function listUsers(env, user) {
       updatedAt: u.updated_at,
     })),
     locations,
-    bootstrapAdmins: String(env.BOOTSTRAP_ADMINS || '')
-      .split(',')
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
+    bootstrapAdmins: [...bootstrapAdmins(env)],
+    // Saving a user also updates the Cloudflare Access policy (access-policy.js).
+    accessSync: accessSyncConfigured(env),
   };
+}
+
+/** Gives every active user (and every bootstrap admin) sign-in access, and nobody else. */
+async function syncAccess(env) {
+  const { results } = await env.DB.prepare('SELECT email FROM users WHERE active = 1').all();
+  return syncAccessPolicy(env, [...results.map((r) => r.email), ...bootstrapAdmins(env)]);
 }
 
 export async function saveUser(env, user, body) {
@@ -81,7 +87,7 @@ export async function saveUser(env, user, body) {
     ),
   ];
   await env.DB.batch(stmts);
-  return { ok: true };
+  return { ok: true, access: await syncAccess(env) };
 }
 
 export async function deleteUser(env, user, email) {
@@ -93,7 +99,7 @@ export async function deleteUser(env, user, email) {
     env.DB.prepare('DELETE FROM users WHERE email = ?').bind(email),
     env.DB.prepare('INSERT INTO audit_log (actor, action, detail) VALUES (?, ?, ?)').bind(user.email, 'delete_user', email),
   ]);
-  return { ok: true };
+  return { ok: true, access: await syncAccess(env) };
 }
 
 export async function auditLog(env, user) {

@@ -4,6 +4,10 @@ import { fmt, h } from './util.js';
 
 const SECTION_LABELS = { sales: 'Sales', discounts: 'Discounts & comps', labor: 'Labor', items: 'Menu items' };
 
+// Result of the Cloudflare Access update from the last save/remove, shown once
+// after the page re-renders.
+let accessNote = null;
+
 export async function adminView(ctx) {
   const data = await ctx.api('/api/admin/users', null, { noQuery: true });
   const locName = new Map(data.locations.map((l) => [l.id, l.name]));
@@ -29,11 +33,17 @@ export async function adminView(ctx) {
     ));
 
   const audit = await ctx.api('/api/admin/audit', null, { noQuery: true });
+  const note = accessNote && accessNote.status !== 'skipped' ? accessNote : null;
+  accessNote = null;
+  const signIn = data.accessSync
+    ? 'Saving a user here also lets them sign in (Cloudflare Access is updated automatically); removing or disabling them takes that away.'
+    : 'People must also be allowed by your Cloudflare Access policy to reach the sign-in page.';
 
   return h('div', { class: 'stack' },
-    data.bootstrapAdmins.length
-      ? h('div', { class: 'notice' }, `Always-admin (BOOTSTRAP_ADMINS): ${data.bootstrapAdmins.join(', ')}. People must also be allowed by your Cloudflare Access policy to reach the sign-in page.`)
-      : null,
+    note ? h('div', { class: 'notice', style: note.status === 'error' ? { color: 'var(--bad)' } : {} }, note.message) : null,
+    h('div', { class: 'notice' },
+      data.bootstrapAdmins.length ? `Always-admin (BOOTSTRAP_ADMINS): ${data.bootstrapAdmins.join(', ')}. ` : '',
+      signIn),
     h('section', { class: 'card' },
       h('div', { class: 'card-head' },
         h('div', {}, h('h2', {}, 'Users & permissions'), h('div', { class: 'sub' }, 'Admins see everything and can manage users. Viewers see only the locations and sections ticked here.')),
@@ -83,7 +93,7 @@ function userForm(ctx, data, u, onSaved, onCancel) {
     e.preventDefault();
     err.textContent = '';
     try {
-      await ctx.post('/api/admin/users', {
+      const res = await ctx.post('/api/admin/users', {
         email: email.value,
         name: name.value,
         role: role.value,
@@ -92,6 +102,7 @@ function userForm(ctx, data, u, onSaved, onCancel) {
         locations: locBoxes.filter((l) => l.box.checked).map((l) => l.id),
         sections: Object.fromEntries(secBoxes.map((s) => [s.k, s.box.checked])),
       });
+      accessNote = res.access || null;
       onSaved();
     } catch (ex) {
       err.textContent = ex.message;
@@ -100,7 +111,8 @@ function userForm(ctx, data, u, onSaved, onCancel) {
   const remove = async () => {
     if (!confirm(`Remove ${u.email}? They will lose access immediately.`)) return;
     try {
-      await ctx.del(`/api/admin/users?email=${encodeURIComponent(u.email)}`);
+      const res = await ctx.del(`/api/admin/users?email=${encodeURIComponent(u.email)}`);
+      accessNote = res.access || null;
       onSaved();
     } catch (ex) {
       err.textContent = ex.message;
