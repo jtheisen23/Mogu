@@ -262,8 +262,7 @@ async function check(client, locations) {
       if (shifts.length) {
         const keys = [...new Set(shifts.flatMap((s) => Object.keys(s)))].sort();
         out(`Shift fields: ${keys.join(', ')}`);
-        const wages = shifts.map((s) => Number(s.hourly_wage)).filter((w) => w > 0).sort((a, b) => a - b);
-        out(`Shifts with hourly_wage: ${wages.length}/${shifts.length}; median ${wages.length ? wages[Math.floor(wages.length / 2)] : 'n/a'} (expected in cents)`);
+        out(`Shifts with hourly_wage: ${shifts.filter((s) => Number(s.hourly_wage) > 0).length}/${shifts.length}`);
         out(`Open shifts: ${shifts.filter((s) => s.open || !s.user_id).length}; with breaks array: ${shifts.filter((s) => Array.isArray(s.breaks) && s.breaks.length).length}`);
         const sample = shifts.find((s) => Array.isArray(s.breaks) && s.breaks.length);
         if (sample) out(`Break fields: ${Object.keys(sample.breaks[0]).join(', ')}; types: ${[...new Set(shifts.flatMap((s) => (s.breaks || []).map((b) => b.type)))].join(', ')}`);
@@ -279,7 +278,8 @@ async function check(client, locations) {
           }
         }
       }
-      await checkPunches(client, company.id, r, tz, today, out);
+      const punches = await checkPunches(client, company.id, r, tz, today, out);
+      await checkWageTypes(client, company.id, new Map(roles.map((x) => [x.id, x.name])), shifts, punches || [], out);
     }
   } catch (err) {
     out(`**Failed:** ${err.message}`);
@@ -306,8 +306,6 @@ async function checkPunches(client, companyId, r, tz, today, out) {
   for (const f of ['clocked_out', 'approved', 'role_id', 'department_id', 'shift_id', 'hourly_wage', 'wage', 'tips', 'deleted']) {
     if (keys.includes(f)) out(`- ${f}: true/set on ${has(f)}/${punches.length}`);
   }
-  const wages = punches.map((p) => Number(p.hourly_wage)).filter((w) => w > 0).sort((a, b) => a - b);
-  if (wages.length) out(`- hourly_wage median ${wages[Math.floor(wages.length / 2)]}, range ${wages[0]}..${wages[wages.length - 1]} (cents if in the thousands)`);
   const withBreaks = punches.filter((p) => Array.isArray(p.breaks) && p.breaks.length);
   out(`- with breaks: ${withBreaks.length}`);
   if (withBreaks.length) {
@@ -320,6 +318,64 @@ async function checkPunches(client, companyId, r, tz, today, out) {
     return Number.isFinite(a) && Number.isFinite(b) && b > a ? sum + (b - a) / 3600000 : sum;
   }, 0);
   out(`- clocked hours before breaks: ${hours.toFixed(1)} across ${new Set(punches.map((p) => p.user_id)).size} employees`);
+  return punches;
+}
+
+// An "hourly" wage above this (in cents) is almost certainly a salary amount.
+const IMPLAUSIBLE_HOURLY_CENTS = 10000;
+
+/**
+ * Per role: how many shifts and punches carry a wage, how many of those look
+ * like a salary rather than an hourly rate, and which 7shifts wage types the
+ * people in that role have. Counts only: no names or amounts, because the
+ * Actions log may be public.
+ */
+async function checkWageTypes(client, companyId, roles, shifts, punches, out) {
+  const roleName = (id) => roles.get(id) || (id ? `role ${id}` : 'no role');
+  const userIds = [...new Set([...shifts, ...punches].map((x) => x.user_id).filter(Boolean))];
+  const typesByUser = new Map();
+  for (const id of userIds.slice(0, 60)) {
+    try {
+      const wages = await client.userWages(companyId, id);
+      typesByUser.set(id, wages.map((w) => ({ type: w.wage_type || 'unknown', role: w.role_id, cents: Number(w.wage_cents) || 0 })));
+    } catch (err) {
+      typesByUser.set(id, [{ type: `lookup failed (${err.status ?? 'error'})`, role: null, cents: 0 }]);
+    }
+  }
+  const rows = new Map();
+  const row = (role) => {
+    if (!rows.has(role)) rows.set(role, { shifts: 0, shiftHigh: 0, punches: 0, punchNoWage: 0, punchHigh: 0, salaryOnShift: 0, types: new Map() });
+    return rows.get(role);
+  };
+  for (const s of shifts) {
+    if (!s.user_id || s.open) continue;
+    const r = row(roleName(s.role_id));
+    r.shifts++;
+    const cents = Number(s.hourly_wage) || 0;
+    if (cents > IMPLAUSIBLE_HOURLY_CENTS) r.shiftHigh++;
+    if ((typesByUser.get(s.user_id) || []).some((w) => w.type !== 'hourly' && w.cents && w.cents === cents)) r.salaryOnShift++;
+  }
+  for (const p of punches) {
+    const r = row(roleName(p.role_id));
+    r.punches++;
+    const cents = Number(p.hourly_wage) || 0;
+    if (!cents) r.punchNoWage++;
+    if (cents > IMPLAUSIBLE_HOURLY_CENTS) r.punchHigh++;
+  }
+  for (const [userId, wages] of typesByUser) {
+    const inRoles = new Set([...shifts, ...punches].filter((x) => x.user_id === userId).map((x) => roleName(x.role_id)));
+    for (const role of inRoles) {
+      const t = row(role).types;
+      for (const type of new Set(wages.map((w) => w.type))) t.set(type, (t.get(type) || 0) + 1);
+    }
+  }
+  out('');
+  out('| Role | Shifts | Shift wage > $100/h | Shift wage = salary | Punches | Punches without wage | Punch wage > $100/h | 7shifts wage types (people) |');
+  out('|---|---|---|---|---|---|---|---|');
+  for (const [role, r] of [...rows].sort()) {
+    const types = [...r.types].map(([t, n]) => `${t} ×${n}`).join(', ') || '—';
+    out(`| ${role} | ${r.shifts} | ${r.shiftHigh} | ${r.salaryOnShift} | ${r.punches} | ${r.punchNoWage} | ${r.punchHigh} | ${types} |`);
+  }
 }
 
 main().catch((err) => {
