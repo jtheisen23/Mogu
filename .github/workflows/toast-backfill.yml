@@ -1,9 +1,10 @@
 name: Toast history backfill
 
-# Loads past Toast data a slice at a time so the D1 free plan's 100k rows
-# written per day is never exceeded. Each run continues from the earliest day
-# already loaded for each location, stops at MAX_ROWS, and does nothing once
-# every location reaches the FROM date.
+# Loads past Toast data, working backwards. Each run continues from the
+# earliest day already loaded for each location, stops at MAX_ROWS, and does
+# nothing once every location reaches the FROM date. The default (1,000,000
+# rows) loads all history in one run, which needs the Workers Paid plan (D1
+# includes 50M rows written/month). On the free plan (100k/day) use 40000.
 on:
   schedule:
     - cron: '20 6 * * *'  # ~2:20am Eastern (1:20am in winter), early in D1's UTC day
@@ -14,9 +15,9 @@ on:
         required: false
         default: '2025-01-01'
       max_rows:
-        description: 'Stop after this many D1 rows written (free plan: 100000/day incl. regular syncs)'
+        description: 'Stop after this many D1 rows written (Workers Paid: 1000000 is fine; free plan: 40000)'
         required: false
-        default: '40000'
+        default: '1000000'
 
 concurrency:
   group: toast-backfill
@@ -28,7 +29,8 @@ permissions:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # All history is about 2-3 hours; an interrupted run resumes on the next one.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,5 +48,5 @@ jobs:
           OVERTIME_MULTIPLIER: ${{ vars.OVERTIME_MULTIPLIER }}
           # Passed through env, not interpolated into the script.
           IN_FROM: ${{ inputs.from || '2025-01-01' }}
-          IN_MAX_ROWS: ${{ inputs.max_rows || '40000' }}
+          IN_MAX_ROWS: ${{ inputs.max_rows || '1000000' }}
         run: node etl/src/index.js --backfill --from "$IN_FROM" --max-rows "$IN_MAX_ROWS"

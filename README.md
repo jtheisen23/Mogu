@@ -2,7 +2,8 @@
 
 A multi-location dashboard for Mogu Chinese. It shows sales, discounts & comps, labor and menu items,
 lets you compare locations and time periods, and controls who can see what. Data comes from the
-**Toast API**, logins go through **Cloudflare Access**, and everything runs on free tiers.
+**Toast API**, logins go through **Cloudflare Access**, and it runs on Cloudflare's $5/month
+Workers Paid plan (everything else is free).
 
 | Tab | What you get |
 |---|---|
@@ -22,10 +23,10 @@ day/week/month and pick locations (Alt/⌘-click shows only that location). The 
 in the URL, so a bookmarked or shared link opens the same view. Every table can be sorted and
 exported to CSV. Light and dark mode are both supported.
 
-## Architecture (all free tier)
+## Architecture
 
 ```
- Toast API ──(every 2h, GitHub Actions)──▶ etl/ (Node, no dependencies)
+ Toast API ──(hourly, GitHub Actions)────▶ etl/ (Node, no dependencies)
                                                │ daily aggregates
                                                ▼
  Browser ──▶ Cloudflare Access (login) ──▶ Cloudflare Worker ──▶ Cloudflare D1 (SQLite)
@@ -37,10 +38,11 @@ exported to CSV. Light and dark mode are both supported.
 - The **Worker** checks the Access JWT itself, then looks the email up in the `users` table to
   decide which locations and sections that person can see. These rules are enforced in the API,
   not only hidden in the UI. Someone who gets past Access but isn't in the table still gets a 403.
-- **D1** stores *daily aggregates*, not raw checks. That keeps queries fast and well inside the
-  free limits (5 GB storage, 5M rows read/day).
-- The **ETL** runs in **GitHub Actions**, not in a Worker cron, because the Workers free plan
-  only allows 10 ms of CPU per run. That isn't enough to process a day of Toast orders.
+- **D1** stores *daily aggregates*, not raw checks. That keeps queries fast and the database
+  small. The Workers Paid plan includes 50M D1 rows written per month; the regular syncs use
+  about 1.2M.
+- The **ETL** runs in **GitHub Actions** (free), not in a Worker cron. It was built for the
+  Workers free plan, which only allows 10 ms of CPU per run: not enough for a day of Toast orders.
 - The **UI** is plain HTML/JS with [Apache ECharts](https://echarts.apache.org) (Apache-2.0),
   served locally from `public/vendor`. There's no build step.
 
@@ -127,10 +129,10 @@ writes nothing and doesn't need the Cloudflare secrets.
 `.github/workflows/toast-sync.yml` refreshes today hourly, started by the Worker's cron trigger (see *Reliable scheduling* below). Each morning it
 also re-syncs the last 7 days, so late edits and tip adjustments are picked up. **History** is
 loaded by `.github/workflows/toast-backfill.yml`. Every night it works backwards from the
-earliest loaded day toward its `from` date (default 2025-01-01), and stops after 40,000 D1 rows
-written so it stays under the free plan's 100k/day. (With 7 locations the regular syncs write about
-40,000 rows a day themselves: roughly 110 rows per location-day, written twice when a day is
-re-synced. Raise the cap only if you have fewer locations or a paid D1 plan.) Once history is complete it does nothing. To
+earliest loaded day toward its `from` date (default 2025-01-01), and stops after 1,000,000 D1
+rows written: enough for all of Mogu's history (about 110 rows per location-day) in one run of
+2–3 hours. That relies on the Workers Paid plan. On the free plan (100k rows written/day, of which
+the regular syncs use about 40,000 with 7 locations) run it with `max_rows` 40000. Once history is complete it does nothing. To
 go further back, run *Actions → Toast history backfill → Run workflow* with an earlier date. For a
 one-off date range, use *Toast sync → Run workflow* with a start and end date. Tick
 *revenue_centers_only* to rewrite only the revenue center numbers for that range: a few dozen D1
