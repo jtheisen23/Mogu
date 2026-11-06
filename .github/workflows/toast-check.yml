@@ -1,0 +1,32 @@
+name: Toast connection check
+
+# Read-only: signs in to Toast and reads one day per location. Writes nothing
+# and needs no Cloudflare secrets. The report appears in the run's summary.
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Business date to test (YYYY-MM-DD). Empty = yesterday.'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check Toast access
+        env:
+          TOAST_CLIENT_ID: ${{ secrets.TOAST_CLIENT_ID }}
+          TOAST_CLIENT_SECRET: ${{ secrets.TOAST_CLIENT_SECRET }}
+          TOAST_API_HOST: ${{ vars.TOAST_API_HOST }}
+          LOCATIONS_JSON: ${{ secrets.LOCATIONS_JSON }}
+          IN_DATE: ${{ inputs.date }}
+        run: |
+          if [ -n "$IN_DATE" ]; then node etl/src/check.js --date "$IN_DATE"; else node etl/src/check.js; fi

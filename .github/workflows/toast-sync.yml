@@ -1,0 +1,84 @@
+name: Toast sync
+
+# The hourly and nightly syncs are started by the Cloudflare Worker's cron
+# triggers (worker/src/scheduler.js), which fire on time; GitHub's own
+# scheduler skipped most hourly runs. Only the nightly 7-day re-sync is kept
+# here as a backup in case a Cloudflare dispatch fails.
+on:
+  schedule:
+    - cron: '40 8 * * *'    # backup: ~4:40am Eastern (3:40am in winter), re-sync the last 7 days
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Sync the last N days (used by the Cloudflare scheduler). Ignored when start is set.'
+        required: false
+      start:
+        description: 'Backfill start date (YYYY-MM-DD). Leave empty for today only.'
+        required: false
+      end:
+        description: 'Backfill end date (YYYY-MM-DD). Defaults to today.'
+        required: false
+      locations:
+        description: 'Comma-separated location ids (e.g. AA,BB). Empty = all.'
+        required: false
+      revenue_centers_only:
+        description: 'Only rewrite revenue center sales for the dates (cheap re-pull; skips labor)'
+        type: boolean
+        default: false
+
+# Each kind of run (start date + locations + days) gets its own queue, so an
+# hourly run can't displace a queued nightly or backfill run.
+concurrency:
+  group: toast-sync-${{ github.event_name == 'workflow_dispatch' && format('{0}-{1}-{2}', inputs.start, inputs.locations, inputs.days) || 'scheduled' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The ETL has no npm dependencies, so there is nothing to install.
+      - name: Sync Toast data into D1
+        env:
+          TOAST_CLIENT_ID: ${{ secrets.TOAST_CLIENT_ID }}
+          TOAST_CLIENT_SECRET: ${{ secrets.TOAST_CLIENT_SECRET }}
+          TOAST_API_HOST: ${{ vars.TOAST_API_HOST }}
+          LOCATIONS_JSON: ${{ secrets.LOCATIONS_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          OVERTIME_MULTIPLIER: ${{ vars.OVERTIME_MULTIPLIER }}
+          # Inputs are passed through env (not interpolated into the script) to avoid shell injection.
+          IN_START: ${{ inputs.start }}
+          IN_END: ${{ inputs.end }}
+          IN_LOCATIONS: ${{ inputs.locations }}
+          IN_DAYS: ${{ inputs.days }}
+          IN_REVENUE_CENTERS_ONLY: ${{ inputs.revenue_centers_only }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          args=()
+          if [ -n "$IN_START" ]; then
+            args+=(--start "$IN_START")
+            [ -n "$IN_END" ] && args+=(--end "$IN_END")
+          elif [ -n "$IN_DAYS" ]; then
+            [[ "$IN_DAYS" =~ ^[0-9]{1,2}$ ]] || { echo "days must be a number"; exit 1; }
+            args+=(--days "$IN_DAYS")
+          elif [ "$SCHEDULE" = "40 8 * * *" ]; then
+            args+=(--days 7)
+          elif [ "$(TZ=America/New_York date +%H)" -lt 6 ]; then
+            # Overnight runs also finish yesterday: its last orders land after the
+            # final evening sync, and GitHub sometimes skips the nightly recheck.
+            args+=(--days 2)
+          else
+            args+=(--days 1)
+          fi
+          [ -n "$IN_LOCATIONS" ] && args+=(--locations "$IN_LOCATIONS")
+          [ "$IN_REVENUE_CENTERS_ONLY" = "true" ] && args+=(--revenue-centers-only)
+          node etl/src/index.js "${args[@]}"

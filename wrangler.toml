@@ -1,0 +1,38 @@
+name = "mogu-dashboard"
+main = "worker/src/index.js"
+compatibility_date = "2025-09-01"
+# Keep variables/secrets set in the Cloudflare dashboard (e.g. BOOTSTRAP_ADMINS) on deploy.
+keep_vars = true
+
+# The dashboard UI (HTML/JS/CSS). Requests that don't match a file fall
+# through to the Worker, which serves /api/*.
+[assets]
+directory = "./public"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mogu"
+database_id = "74334217-55c0-4cf7-96c3-8668dd310aae"
+migrations_dir = "db/migrations"
+
+[vars]
+AUTH_MODE = "access"
+# Repository whose "Toast sync" workflow the cron triggers start. The token
+# (GITHUB_DISPATCH_TOKEN) is a secret set in the Cloudflare dashboard.
+GITHUB_REPO = "jtheisen23/Mogu"
+# PLACEHOLDER: Zero Trust team domain that issues the login tokens (README step 3).
+ACCESS_TEAM_DOMAIN = "REPLACE-WITH-TEAM-NAME.cloudflareaccess.com"
+# PLACEHOLDER: Application Audience (AUD) tag from Zero Trust > Access > Applications > your app.
+ACCESS_AUD = "REPLACE_WITH_ACCESS_AUD_TAG"
+# BOOTSTRAP_ADMINS (comma-separated emails that are always admins) is set as a
+# secret in the Cloudflare dashboard so it isn't published in this repo.
+
+# Starts the Toast sync on GitHub Actions (worker/src/scheduler.js). Times are UTC:
+# hourly at :17, plus 8:40 UTC (~4:40am Eastern, 3:40am in winter) for the 7-day recheck.
+[triggers]
+crons = ["17 * * * *", "40 8 * * *"]
+
+[observability]
+enabled = true
