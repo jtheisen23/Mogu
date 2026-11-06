@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mogu Chinese Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/echarts.min.js" defer></script>
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/logo.svg" alt="Mogu Chinese" width="73" height="48">
+      <span>Dashboard</span>
+    </div>
+    <div class="topbar-right">
+      <span id="freshness" class="muted small"></span>
+      <div id="theme-toggle" class="seg theme-seg" role="group" aria-label="Color theme">
+        <button type="button" data-theme="light" title="Light mode">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          Light
+        </button>
+        <button type="button" data-theme="dark" title="Dark mode">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          Dark
+        </button>
+        <button type="button" data-theme="auto" title="Match your device setting">Auto</button>
+      </div>
+      <span id="user-badge" class="user-badge"></span>
+      <a class="muted small" href="/cdn-cgi/access/logout">Sign out</a>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist"></nav>
+
+  <section class="filters" aria-label="Filters">
+    <label class="field">
+      <span>Date range</span>
+      <select id="f-preset"></select>
+    </label>
+    <span id="f-custom" class="field-group" hidden>
+      <label class="field"><span>From</span><input type="date" id="f-start"></label>
+      <label class="field"><span>To</span><input type="date" id="f-end"></label>
+    </span>
+    <label class="field">
+      <span>Compare to</span>
+      <select id="f-compare"></select>
+    </label>
+    <span id="f-ccustom" class="field-group" hidden>
+      <label class="field"><span>From</span><input type="date" id="f-cstart"></label>
+      <label class="field"><span>To</span><input type="date" id="f-cend"></label>
+    </span>
+    <label class="field">
+      <span>Group by</span>
+      <select id="f-grain">
+        <option value="day">Day</option>
+        <option value="week">Week</option>
+        <option value="month">Month</option>
+      </select>
+    </label>
+    <div class="field">
+      <span>Locations</span>
+      <div id="f-locations" class="chips" role="group" aria-label="Locations"></div>
+    </div>
+    <div id="period-label" class="period-label muted small"></div>
+  </section>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <div id="tooltip-root"></div>
+</body>
+</html>

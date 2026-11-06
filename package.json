@@ -1,0 +1,23 @@
+{
+  "name": "mogu-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-location sales, discount and labor dashboard for Mogu Chinese, fed by the Toast API and hosted on Cloudflare's free tier.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply mogu --local",
+    "db:migrate:remote": "wrangler d1 migrations apply mogu --remote",
+    "demo:seed": "node etl/src/demo.js --out .tmp/demo.sql && wrangler d1 execute mogu --local --file .tmp/demo.sql",
+    "sync": "node etl/src/index.js",
+    "test": "node --test etl/test/*.test.js worker/test/*.test.js"
+  },
+  "devDependencies": {
+    "echarts": "6.1.0",
+    "wrangler": "^4.40.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

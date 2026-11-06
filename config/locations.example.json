@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy to config/locations.json (or store the JSON in the LOCATIONS_JSON secret). 'id' is a short code used in the dashboard and in user permissions. Find each restaurant GUID in Toast Web > Integrations > Toast API access, or from GET /partners/v1/restaurants. PLACEHOLDERS: replace the names, ids and GUIDs below with Mogu Chinese's real locations.",
+  "locations": [
+    {
+      "id": "AA",
+      "name": "Location One",
+      "toastGuid": "00000000-0000-0000-0000-000000000001",
+      "timezone": "America/New_York",
+      "salariedLaborPerDay": 0
+    },
+    {
+      "id": "BB",
+      "name": "Location Two",
+      "toastGuid": "00000000-0000-0000-0000-000000000002",
+      "timezone": "America/New_York",
+      "salariedLaborPerDay": 0
+    }
+  ]
+}

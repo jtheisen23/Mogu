@@ -1,0 +1,4 @@
+# Copy to .dev.vars for `npm run dev`. Never deploy these values.
+AUTH_MODE=dev
+DEV_USER_EMAIL=you@example.com
+BOOTSTRAP_ADMINS=you@example.com

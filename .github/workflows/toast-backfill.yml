@@ -1,0 +1,50 @@
+name: Toast history backfill
+
+# Loads past Toast data a slice at a time so the D1 free plan's 100k rows
+# written per day is never exceeded. Each run continues from the earliest day
+# already loaded for each location, stops at MAX_ROWS, and does nothing once
+# every location reaches the FROM date.
+on:
+  schedule:
+    - cron: '20 6 * * *'  # ~2:20am Eastern (1:20am in winter), early in D1's UTC day
+  workflow_dispatch:
+    inputs:
+      from:
+        description: 'Load history back to this date (YYYY-MM-DD)'
+        required: false
+        default: '2025-01-01'
+      max_rows:
+        description: 'Stop after this many D1 rows written (free plan: 100000/day incl. regular syncs)'
+        required: false
+        default: '60000'
+
+concurrency:
+  group: toast-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Load the next slice of history
+        env:
+          TOAST_CLIENT_ID: ${{ secrets.TOAST_CLIENT_ID }}
+          TOAST_CLIENT_SECRET: ${{ secrets.TOAST_CLIENT_SECRET }}
+          TOAST_API_HOST: ${{ vars.TOAST_API_HOST }}
+          LOCATIONS_JSON: ${{ secrets.LOCATIONS_JSON }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          OVERTIME_MULTIPLIER: ${{ vars.OVERTIME_MULTIPLIER }}
+          # Passed through env, not interpolated into the script.
+          IN_FROM: ${{ inputs.from || '2025-01-01' }}
+          IN_MAX_ROWS: ${{ inputs.max_rows || '60000' }}
+        run: node etl/src/index.js --backfill --from "$IN_FROM" --max-rows "$IN_MAX_ROWS"
