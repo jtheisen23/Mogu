@@ -5,7 +5,7 @@
 //   node etl/src/index.js --days 7              # last 7 business dates
 //   node etl/src/index.js --start 2025-01-01 --end 2025-12-31   # backfill
 //   node etl/src/index.js --locations DT,UT --out .tmp/sync.sql  # write SQL instead of D1
-//   node etl/src/index.js --backfill --from 2025-01-01 --max-rows 40000  # nightly history load
+//   node etl/src/index.js --backfill --from 2025-01-01 --max-rows 1000000  # history load
 //   node etl/src/index.js --start 2026-02-01 --end 2026-10-10 --revenue-centers-only
 //                                   # rewrite only revenue center sales (after a mapping fix)
 //
@@ -32,7 +32,7 @@ const { values: args } = parseArgs({
     'revenue-centers-only': { type: 'boolean', default: false },
     backfill: { type: 'boolean', default: false },
     from: { type: 'string', default: '2025-01-01' },
-    'max-rows': { type: 'string', default: '40000' },
+    'max-rows': { type: 'string', default: '1000000' },
     config: { type: 'string', default: 'config/locations.json' },
   },
 });
@@ -124,7 +124,7 @@ async function main() {
 /**
  * Loads history backwards from each location's earliest synced day toward
  * --from, round-robin across locations so they fill in evenly, and stops once
- * --max-rows D1 rows have been written (the free plan allows 100k/day and the
+ * --max-rows D1 rows have been written (on the D1 free plan, 100k/day, the
  * regular syncs need some of that). Safe to run every night: when every
  * location has reached --from it does nothing.
  */

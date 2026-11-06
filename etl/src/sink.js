@@ -27,7 +27,7 @@ export class D1Sink {
     this.url = `${base}/accounts/${accountId}/d1/database/${databaseId}/query`;
     this.apiToken = apiToken;
     this.log = log;
-    this.rowsWritten = 0; // D1 free plan allows 100k rows written per day
+    this.rowsWritten = 0; // counts toward D1's rows-written allowance
   }
 
   /** Statements for one location-day are sent together so a day is replaced as a unit. */
