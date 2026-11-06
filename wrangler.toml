@@ -24,7 +24,7 @@ AUTH_MODE = "access"
 # (GITHUB_DISPATCH_TOKEN) is a secret set in the Cloudflare dashboard.
 GITHUB_REPO = "jtheisen23/Mogu"
 # Zero Trust team domain that issues the login tokens (Zero Trust > Settings > Team domain).
-ACCESS_TEAM_DOMAIN = "lucky-smoke-e977.cloudflareaccess.com"
+ACCESS_TEAM_DOMAIN = "mogu-dashboard.cloudflareaccess.com"
 # Application Audience (AUD) tag from Zero Trust > Access controls > Applications > mogu.
 ACCESS_AUD = "a0161db3d22146df93ee378b9a49097394a9a7e9fd4723487400050a2d87820d"
 # BOOTSTRAP_ADMINS (comma-separated emails that are always admins) is set as a
