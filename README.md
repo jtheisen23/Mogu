@@ -127,8 +127,10 @@ writes nothing and doesn't need the Cloudflare secrets.
 `.github/workflows/toast-sync.yml` refreshes today hourly, started by the Worker's cron trigger (see *Reliable scheduling* below). Each morning it
 also re-syncs the last 7 days, so late edits and tip adjustments are picked up. **History** is
 loaded by `.github/workflows/toast-backfill.yml`. Every night it works backwards from the
-earliest loaded day toward its `from` date (default 2025-01-01), and stops after 60,000 D1 rows
-written so it stays under the free plan's 100k/day. Once history is complete it does nothing. To
+earliest loaded day toward its `from` date (default 2025-01-01), and stops after 40,000 D1 rows
+written so it stays under the free plan's 100k/day. (With 7 locations the regular syncs write about
+40,000 rows a day themselves: roughly 110 rows per location-day, written twice when a day is
+re-synced. Raise the cap only if you have fewer locations or a paid D1 plan.) Once history is complete it does nothing. To
 go further back, run *Actions → Toast history backfill → Run workflow* with an earlier date. For a
 one-off date range, use *Toast sync → Run workflow* with a start and end date. Tick
 *revenue_centers_only* to rewrite only the revenue center numbers for that range: a few dozen D1

@@ -16,7 +16,7 @@ on:
       max_rows:
         description: 'Stop after this many D1 rows written (free plan: 100000/day incl. regular syncs)'
         required: false
-        default: '60000'
+        default: '40000'
 
 concurrency:
   group: toast-backfill
@@ -46,5 +46,5 @@ jobs:
           OVERTIME_MULTIPLIER: ${{ vars.OVERTIME_MULTIPLIER }}
           # Passed through env, not interpolated into the script.
           IN_FROM: ${{ inputs.from || '2025-01-01' }}
-          IN_MAX_ROWS: ${{ inputs.max_rows || '60000' }}
+          IN_MAX_ROWS: ${{ inputs.max_rows || '40000' }}
         run: node etl/src/index.js --backfill --from "$IN_FROM" --max-rows "$IN_MAX_ROWS"
