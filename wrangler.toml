@@ -30,6 +30,13 @@ ACCESS_AUD = "a0161db3d22146df93ee378b9a49097394a9a7e9fd4723487400050a2d87820d"
 # BOOTSTRAP_ADMINS (comma-separated emails that are always admins) is set as a
 # secret in the Cloudflare dashboard so it isn't published in this repo.
 
+# Admin > Add user also updates this reusable Cloudflare Access policy, so people
+# can sign in without being added in Cloudflare too (worker/src/access-policy.js).
+# Needs the Worker secret ACCESS_POLICY_TOKEN (Account > Access: Apps and
+# Policies > Edit); without it, add people to the policy by hand.
+CLOUDFLARE_ACCOUNT_ID = "7d20b7f0a3e286432148a680b2ce5969"
+ACCESS_POLICY_NAME = "Mogu dashboard users"
+
 # Starts the Toast sync on GitHub Actions (worker/src/scheduler.js). Times are UTC:
 # hourly at :17, plus 8:40 UTC (~4:40am Eastern, 3:40am in winter) for the 7-day recheck.
 [triggers]

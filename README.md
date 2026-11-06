@@ -167,7 +167,19 @@ centers or discount names into reporting groups, e.g. "Draft", "Draft Beer" and 
 applied when the dashboard reads data, so they cover all history immediately and never change the
 stored Toast data.
 
-People also have to be allowed by the Access policy (step 3.3) to reach the sign-in page.
+**Sign-in access is updated for you.** Saving a user in Admin also adds their email to the
+Cloudflare Access policy *Mogu dashboard users*, so they can sign in right away; disabling or
+removing them takes it out again. Admins in `BOOTSTRAP_ADMINS` always stay in. The Admin page
+shows the result after each save, and if Cloudflare refuses the update the user is still saved
+and the message says why. Rules in that policy other than individual emails (for example
+*Emails ending in*) are left alone, but individual emails added there by hand are replaced by the
+dashboard's list, so manage people in Admin only.
+
+This needs a Worker **secret** `ACCESS_POLICY_TOKEN`: in Cloudflare, *Manage account → Account
+API tokens → Create token*, permission **Access: Apps and Policies → Edit** on this account. The
+policy name and account ID are `ACCESS_POLICY_NAME` and `CLOUDFLARE_ACCOUNT_ID` in
+`wrangler.toml`. Without the secret, nothing changes in Cloudflare and people also have to be
+added to the Access policy (step 3) by hand.
 
 ## How numbers are calculated
 
