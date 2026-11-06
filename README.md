@@ -152,8 +152,10 @@ token limited to this repository with **Actions: Read and write** permission. Gi
 schedule keeps only the 8:40 UTC 7-day re-sync as a backup.
 
 **7shifts:** Mogu's **actual labor** (the Labor tab, labor %, SPLH) comes from **7shifts time
-punches**, because Mogu clocks in on 7shifts, not Toast. Each sync writes it for the synced days,
-and the Toast sync leaves labor alone. To go back to Toast time entries, set the repository
+punches**, because Mogu clocks in on 7shifts, not Toast. Each sync rewrites labor for the synced
+days that have 7shifts punches, and the Toast sync leaves labor alone. Days without punches keep
+what they have, so labor from Toast time entries before Mogu moved to 7shifts (e.g. early 2025)
+stays. To go back to Toast time entries, set the repository
 variable `LABOR_SOURCE` to `toast`. The *7shifts* tab (users with the **7shifts** box ticked in
 Admin, for their own locations; labor and sales figures follow the Labor and Sales permissions)
 compares scheduled labor from 7shifts with actual labor and shows the next 14 days of schedule.

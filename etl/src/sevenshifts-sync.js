@@ -20,11 +20,11 @@
 
 import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { addDays, eachDate, parseDate, todayIn } from './dates.js';
+import { addDays, parseDate, todayIn } from './dates.js';
 import { loadLocations } from './config.js';
 import {
-  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, localDate, localMidnightUtc, matchLocations,
-  punchHours, punchLaborRows, SevenShiftsClient, weekStartOf,
+  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
+  matchLocations, punchHours, punchLaborRows, SevenShiftsClient, weekStartOf,
 } from './sevenshifts.js';
 import { lit } from './sql.js';
 import { D1Sink, FileSink } from './sink.js';
@@ -106,10 +106,10 @@ async function main() {
     if (labor?.has(loc.id)) {
       const l = labor.get(loc.id);
       try {
-        await sink.write(laborStatements(loc.id, l.start, l.end, l.rows, loc.salariedLaborPerDay));
+        await sink.write(laborStatements(loc.id, l.days, l.rows, loc.salariedLaborPerDay));
         const hours = l.rows.reduce((s, r) => s + r.regular_hours + r.overtime_hours, 0);
         const cost = l.rows.reduce((s, r) => s + r.regular_cost + r.overtime_cost, 0);
-        log(`${loc.id} actual labor: ${l.start} .. ${l.end}, ${l.punches} punches, ${hours.toFixed(1)} h, $${cost.toFixed(2)} hourly${l.salaried ? ` (${l.salaried} salaried punches left out)` : ''}`);
+        log(`${loc.id} actual labor: ${l.start} .. ${l.end}, ${l.days.length} day(s) with punches, ${l.punches} hourly punches, ${hours.toFixed(1)} h, $${cost.toFixed(2)}${l.salaried ? ` (${l.salaried} salaried punches left out)` : ''}`);
       } catch (err) {
         failures++;
         log(`${loc.id} actual labor: FAILED - ${err.message}`);
@@ -175,6 +175,7 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
   const items = [];
   const ranges = new Map();
   const salariedByRemote = new Map();
+  const daysByRemote = new Map(); // days with any closed punch: only those days are replaced
   for (const r of remoteLocations) {
     const pair = pairs.find((p) => p.remote?.id === r.id);
     const tz = pair?.loc.timezone || r.timezone || 'America/New_York';
@@ -192,10 +193,13 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
     );
     const roles = new Map((await client.roles(companyId, r.id)).map((x) => [x.id, x.name]));
     let salaried = 0;
+    const days = new Set();
     for (const p of punches) {
       if (p.deleted || !p.user_id) continue;
       const hours = punchHours(p);
       if (hours === null) continue; // still clocked in; a later sync picks it up
+      const date = localDate(p.clocked_in, tz);
+      if (date >= start && date <= last) days.add(date);
       const role = roles.get(p.role_id) || (p.role_id ? `Role ${p.role_id}` : 'No role');
       if (skip.has(role.trim().toLowerCase())) continue;
       const wages = await wagesOf(p.user_id);
@@ -204,9 +208,10 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
         continue;
       }
       const cents = Number(p.hourly_wage) || hourlyWageCents(wages, p.role_id);
-      items.push({ remoteId: r.id, user_id: p.user_id, clockedIn: Date.parse(p.clocked_in), date: localDate(p.clocked_in, tz), hours, role, wage: cents / 100 });
+      items.push({ remoteId: r.id, user_id: p.user_id, clockedIn: Date.parse(p.clocked_in), date, hours, role, wage: cents / 100 });
     }
     salariedByRemote.set(r.id, salaried);
+    daysByRemote.set(r.id, [...days]);
   }
   allocateOvertime(items, { weekStart });
 
@@ -215,30 +220,15 @@ async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
     const range = remote && ranges.get(remote.id);
     if (!range) continue;
     const mine = items.filter((it) => it.remoteId === remote.id && it.date >= range.start && it.date <= range.end);
-    out.set(loc.id, { ...range, rows: punchLaborRows(mine, { overtimeMultiplier }), punches: mine.length, salaried: salariedByRemote.get(remote.id) || 0 });
+    out.set(loc.id, {
+      ...range,
+      days: daysByRemote.get(remote.id) || [],
+      rows: punchLaborRows(mine, { overtimeMultiplier }),
+      punches: mine.length,
+      salaried: salariedByRemote.get(remote.id) || 0,
+    });
   }
   return out;
-}
-
-/** Replaces actual labor for a location's date range; salaried pay is added per day, as with Toast labor. */
-function laborStatements(locationId, start, end, rows, salariedPerDay) {
-  const all = [...rows];
-  const salaried = Number(salariedPerDay) || 0;
-  if (salaried > 0) {
-    for (const date of eachDate(start, end)) {
-      all.push({ business_date: date, job_title: 'Salaried', employees: 0, shifts: 0, regular_hours: 0, overtime_hours: 0, regular_cost: Math.round(salaried * 100) / 100, overtime_cost: 0 });
-    }
-  }
-  const stmts = [`DELETE FROM labor_daily WHERE location_id=${lit(locationId)} AND business_date BETWEEN ${lit(start)} AND ${lit(end)};`];
-  const cols = ['location_id', 'business_date', 'job_title', 'employees', 'shifts', 'regular_hours', 'overtime_hours', 'regular_cost', 'overtime_cost'];
-  for (let i = 0; i < all.length; i += 200) {
-    const values = all
-      .slice(i, i + 200)
-      .map((r) => `(${cols.map((c) => lit(c === 'location_id' ? locationId : r[c])).join(',')})`)
-      .join(',\n');
-    stmts.push(`INSERT INTO labor_daily (${cols.join(',')}) VALUES\n${values};`);
-  }
-  return stmts;
 }
 
 /** Log book posts with category names, author names and comments attached. */

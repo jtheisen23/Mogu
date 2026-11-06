@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, localDate, localMidnightUtc, matchLocations,
-  punchHours, punchLaborRows, weekStartOf,
+  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, laborStatements, localDate, localMidnightUtc,
+  matchLocations, punchHours, punchLaborRows, weekStartOf,
 } from '../src/sevenshifts.js';
+import { migratedDb } from '../../worker/test/d1.js';
 
 const tz = 'America/Los_Angeles';
 
@@ -100,4 +101,21 @@ test('overtime is hours past 40 a week per employee, across days and locations',
   assert.deepEqual(fri, { business_date: '2026-11-06', job_title: 'Associate (BOH)', shifts: 1, regular_hours: 4, overtime_hours: 5, regular_cost: 80, overtime_cost: 150, employees: 1 });
   const tue = rows.find((r) => r.business_date === '2026-11-03');
   assert.deepEqual([tue.employees, tue.shifts, tue.regular_hours], [2, 2, 15]);
+});
+
+test('7shifts labor replaces only days with punches, keeping older Toast labor', () => {
+  const db = migratedDb();
+  const toastRow = (date, job) => db.prepare(`INSERT INTO labor_daily (location_id,business_date,job_title,employees,shifts,regular_hours,overtime_hours,regular_cost,overtime_cost) VALUES ('HB',?,?,1,1,8,0,140,0)`).run(date, job);
+  toastRow('2025-01-01', 'Cook'); // before Mogu clocked in on 7shifts: no punches that day
+  toastRow('2026-11-02', 'Cook'); // a day 7shifts now covers
+  const rows = [{ business_date: '2026-11-02', job_title: 'Associate (BOH)', employees: 2, shifts: 2, regular_hours: 15, overtime_hours: 0, regular_cost: 270, overtime_cost: 0 }];
+  for (const sql of laborStatements('HB', ['2026-11-02', '2026-11-03'], rows, 178.08)) db.exec(sql);
+  const got = db.prepare('SELECT business_date, job_title, regular_cost FROM labor_daily ORDER BY business_date, job_title').all().map((r) => ({ ...r }));
+  assert.deepEqual(got, [
+    { business_date: '2025-01-01', job_title: 'Cook', regular_cost: 140 },
+    { business_date: '2026-11-02', job_title: 'Associate (BOH)', regular_cost: 270 },
+    { business_date: '2026-11-02', job_title: 'Salaried', regular_cost: 178.08 },
+    { business_date: '2026-11-03', job_title: 'Salaried', regular_cost: 178.08 },
+  ]);
+  assert.deepEqual(laborStatements('HB', [], rows, 100), []);
 });

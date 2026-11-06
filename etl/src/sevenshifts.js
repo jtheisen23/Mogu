@@ -4,6 +4,8 @@
 //
 // Docs: https://developers.7shifts.com/reference
 
+import { lit } from './sql.js';
+
 const DEFAULT_HOST = 'https://api.7shifts.com';
 const PAGE_SIZE = 500;
 
@@ -339,4 +341,36 @@ export function punchLaborRows(items, { overtimeMultiplier = 1.5 } = {}) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * SQL that replaces a location's actual labor on the given days (the days
+ * 7shifts has punches on) and on no others, so labor that came from Toast
+ * time entries before the location clocked in on 7shifts is kept. Salaried
+ * pay (salariedPerDay) is added on each of those days, as with Toast labor.
+ */
+export function laborStatements(locationId, days, rows, salariedPerDay = 0) {
+  const dates = [...new Set(days)].sort();
+  if (!dates.length) return [];
+  const wanted = new Set(dates);
+  const all = rows.filter((r) => wanted.has(r.business_date));
+  const salaried = Number(salariedPerDay) || 0;
+  if (salaried > 0) {
+    for (const date of dates) {
+      all.push({ business_date: date, job_title: 'Salaried', employees: 0, shifts: 0, regular_hours: 0, overtime_hours: 0, regular_cost: round2(salaried), overtime_cost: 0 });
+    }
+  }
+  const stmts = [];
+  for (let i = 0; i < dates.length; i += 100) {
+    stmts.push(`DELETE FROM labor_daily WHERE location_id=${lit(locationId)} AND business_date IN (${dates.slice(i, i + 100).map(lit).join(',')});`);
+  }
+  const cols = ['location_id', 'business_date', 'job_title', 'employees', 'shifts', 'regular_hours', 'overtime_hours', 'regular_cost', 'overtime_cost'];
+  for (let i = 0; i < all.length; i += 200) {
+    const values = all
+      .slice(i, i + 200)
+      .map((r) => `(${cols.map((c) => lit(c === 'location_id' ? locationId : r[c])).join(',')})`)
+      .join(',\n');
+    stmts.push(`INSERT INTO labor_daily (${cols.join(',')}) VALUES\n${values};`);
+  }
+  return stmts;
 }
