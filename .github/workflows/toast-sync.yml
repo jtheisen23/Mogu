@@ -71,13 +71,9 @@ jobs:
           IN_DAYS: ${{ inputs.days }}
           IN_REVENUE_CENTERS_ONLY: ${{ inputs.revenue_centers_only }}
           SCHEDULE: ${{ github.event.schedule }}
-          # Where actual labor comes from: '7shifts' (time punches, written by
-          # the 7shifts step) or 'toast' (Toast time entries). Repository
-          # variable LABOR_SOURCE overrides the default.
-          LABOR_SOURCE: ${{ vars.LABOR_SOURCE || '7shifts' }}
         run: |
-          args=()
-          [ "$LABOR_SOURCE" = "7shifts" ] && args+=(--skip-labor)
+          # Labor comes only from 7shifts (next step), never from Toast time entries.
+          args=(--skip-labor)
           if [ -n "$IN_START" ]; then
             args+=(--start "$IN_START")
             [ -n "$IN_END" ] && args+=(--end "$IN_END")
@@ -96,9 +92,9 @@ jobs:
           [ -n "$IN_LOCATIONS" ] && args+=(--locations "$IN_LOCATIONS")
           [ "$IN_REVENUE_CENTERS_ONLY" = "true" ] && args+=(--revenue-centers-only)
           node etl/src/index.js "${args[@]}"
-      # Scheduled labor and log book from 7shifts (7shifts tab), plus actual
-      # labor from time punches when LABOR_SOURCE is 7shifts. Skipped until the
-      # SEVENSHIFTS_ACCESS_TOKEN secret is added; runs even if the Toast step failed.
+      # Actual labor (from time punches), scheduled labor and the log book from
+      # 7shifts. Skipped until the SEVENSHIFTS_ACCESS_TOKEN secret is added;
+      # runs even if the Toast step failed.
       - name: Sync 7shifts into D1
         if: ${{ !cancelled() && !inputs.revenue_centers_only }}
         env:
@@ -112,7 +108,6 @@ jobs:
           IN_DAYS: ${{ inputs.days }}
           IN_LOGBOOK_ALL: ${{ inputs.logbook_all }}
           SCHEDULE: ${{ github.event.schedule }}
-          LABOR_SOURCE: ${{ vars.LABOR_SOURCE || '7shifts' }}
           OVERTIME_MULTIPLIER: ${{ vars.OVERTIME_MULTIPLIER }}
           SEVENSHIFTS_WEEK_START: ${{ vars.SEVENSHIFTS_WEEK_START }}
         run: |
@@ -132,5 +127,5 @@ jobs:
             args+=(--days 2)
           fi
           [ "$IN_LOGBOOK_ALL" = "true" ] && args+=(--logbook-all)
-          [ "$LABOR_SOURCE" = "7shifts" ] && args+=(--labor)
+          args+=(--labor)
           node etl/src/sevenshifts-sync.js "${args[@]}"

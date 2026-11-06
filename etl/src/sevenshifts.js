@@ -4,6 +4,7 @@
 //
 // Docs: https://developers.7shifts.com/reference
 
+import { eachDate } from './dates.js';
 import { lit } from './sql.js';
 
 const DEFAULT_HOST = 'https://api.7shifts.com';
@@ -344,26 +345,22 @@ function sleep(ms) {
 }
 
 /**
- * SQL that replaces a location's actual labor on the given days (the days
- * 7shifts has punches on) and on no others, so labor that came from Toast
- * time entries before the location clocked in on 7shifts is kept. Salaried
- * pay (salariedPerDay) is added on each of those days, as with Toast labor.
+ * SQL that replaces a location's actual labor for every day from start to end
+ * with labor from 7shifts punches. Labor comes only from 7shifts: anything
+ * else stored for those days (e.g. old Toast time entries) is removed, and a
+ * day without punches has no hourly labor. Salaried pay (salariedPerDay) is
+ * added on every day, as before.
  */
-export function laborStatements(locationId, days, rows, salariedPerDay = 0) {
-  const dates = [...new Set(days)].sort();
-  if (!dates.length) return [];
-  const wanted = new Set(dates);
-  const all = rows.filter((r) => wanted.has(r.business_date));
+export function laborStatements(locationId, start, end, rows, salariedPerDay = 0) {
+  if (!start || !end || end < start) return [];
+  const all = rows.filter((r) => r.business_date >= start && r.business_date <= end);
   const salaried = Number(salariedPerDay) || 0;
   if (salaried > 0) {
-    for (const date of dates) {
+    for (const date of eachDate(start, end)) {
       all.push({ business_date: date, job_title: 'Salaried', employees: 0, shifts: 0, regular_hours: 0, overtime_hours: 0, regular_cost: round2(salaried), overtime_cost: 0 });
     }
   }
-  const stmts = [];
-  for (let i = 0; i < dates.length; i += 100) {
-    stmts.push(`DELETE FROM labor_daily WHERE location_id=${lit(locationId)} AND business_date IN (${dates.slice(i, i + 100).map(lit).join(',')});`);
-  }
+  const stmts = [`DELETE FROM labor_daily WHERE location_id=${lit(locationId)} AND business_date BETWEEN ${lit(start)} AND ${lit(end)};`];
   const cols = ['location_id', 'business_date', 'job_title', 'employees', 'shifts', 'regular_hours', 'overtime_hours', 'regular_cost', 'overtime_cost'];
   for (let i = 0; i < all.length; i += 200) {
     const values = all

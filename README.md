@@ -152,11 +152,9 @@ token limited to this repository with **Actions: Read and write** permission. Gi
 schedule keeps only the 8:40 UTC 7-day re-sync as a backup.
 
 **7shifts:** Mogu's **actual labor** (the Labor tab, labor %, SPLH) comes from **7shifts time
-punches**, because Mogu clocks in on 7shifts, not Toast. Each sync rewrites labor for the synced
-days that have 7shifts punches, and the Toast sync leaves labor alone. Days without punches keep
-what they have, so labor from Toast time entries before Mogu moved to 7shifts (e.g. early 2025)
-stays. To go back to Toast time entries, set the repository
-variable `LABOR_SOURCE` to `toast`. The *7shifts* tab (users with the **7shifts** box ticked in
+punches** and only from them: Toast time entries are never used. Each sync rewrites labor for
+every synced day from 7shifts (a day without punches has no hourly labor), and the Toast sync and
+backfill always skip labor. The *7shifts* tab (users with the **7shifts** box ticked in
 Admin, for their own locations; labor and sales figures follow the Labor and Sales permissions)
 compares scheduled labor from 7shifts with actual labor and shows the next 14 days of schedule.
 Salaried people (7shifts wage type not hourly, e.g. General Managers) are left out of both scheduled
@@ -214,7 +212,7 @@ added to the Access policy (step 3) by hand.
 | Net sales | Gross sales − discounts. Tax, tips and service charges are tracked separately |
 | Voids | Value of voided items, checks and orders |
 | Avg check | Net sales ÷ orders |
-| Labor $ | From hourly 7shifts time punches: paid hours (clock-out − clock-in − unpaid breaks) × wage, with hours past 40 per employee per Monday–Sunday week (all locations) as overtime × wage × 1.5, plus any configured salaried cost per day. Salaried people are not in the punches' cost. With `LABOR_SOURCE=toast`, from Toast time entries instead |
+| Labor $ | From hourly 7shifts time punches: paid hours (clock-out − clock-in − unpaid breaks) × wage, with hours past 40 per employee per Monday–Sunday week (all locations) as overtime × wage × 1.5, plus any configured salaried cost per day. Salaried people are not in the punches' cost. Toast time entries are not used |
 | Labor % | Labor $ ÷ net sales |
 | SPLH | Net sales ÷ labor hours |
 | Hour of day | Hour the order was opened, in the location's time zone |
