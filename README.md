@@ -74,8 +74,9 @@ The header logo is `public/logo.webp` and the browser-tab icon is `public/favico
    enable it.
 2. Note the **client ID** and **client secret**, and each location's **restaurant GUID**.
 3. Copy `config/locations.example.json` and fill in one entry per location. `id` is a short code
-   such as `PL` that the dashboard uses in permissions. `salariedLaborPerDay` (optional) adds
-   salaried managers' daily cost to labor, because Toast time entries only cover hourly staff.
+   such as `HB` that the dashboard uses in permissions. `salariedLaborPerDay` (optional) adds
+   salaried managers' daily cost to labor (e.g. the location's salaried pay per year ÷ 365),
+   because actual labor only covers hourly time punches.
 
 ### 2. Cloudflare database and Worker
 ```bash
@@ -150,8 +151,16 @@ also finish the previous day. They need a Worker **secret** `GITHUB_DISPATCH_TOK
 token limited to this repository with **Actions: Read and write** permission. GitHub's own
 schedule keeps only the 8:40 UTC 7-day re-sync as a backup.
 
-**7shifts:** the *7shifts* tab (users with the **7shifts** box ticked in Admin, for their own locations; Toast labor and sales figures follow the Labor and Sales permissions) compares scheduled labor from 7shifts with actual
-labor from Toast and shows the next 14 days of schedule. Add a GitHub secret
+**7shifts:** Mogu's **actual labor** (the Labor tab, labor %, SPLH) comes from **7shifts time
+punches**, because Mogu clocks in on 7shifts, not Toast. Each sync writes it for the synced days,
+and the Toast sync leaves labor alone. To go back to Toast time entries, set the repository
+variable `LABOR_SOURCE` to `toast`. The *7shifts* tab (users with the **7shifts** box ticked in
+Admin, for their own locations; labor and sales figures follow the Labor and Sales permissions)
+compares scheduled labor from 7shifts with actual labor and shows the next 14 days of schedule.
+Salaried people (7shifts wage type not hourly, e.g. General Managers) are left out of both scheduled
+and actual hourly labor; add their cost with `salariedLaborPerDay`. To load 7shifts history (schedule,
+labor and log book), run *Toast sync* with *sevenshifts_only* and *logbook_all* ticked and a start
+date such as 2025-01-01. Add a GitHub secret
 `SEVENSHIFTS_ACCESS_TOKEN` (7shifts → Settings → Developer tools → Access tokens); each Toast sync
 then also loads published shifts for the last few days and the next 14. Run *Actions → 7shifts
 connection check* to confirm the token, how 7shifts locations match the dashboard's, and what a
@@ -203,7 +212,7 @@ added to the Access policy (step 3) by hand.
 | Net sales | Gross sales − discounts. Tax, tips and service charges are tracked separately |
 | Voids | Value of voided items, checks and orders |
 | Avg check | Net sales ÷ orders |
-| Labor $ | Regular hours × wage + OT hours × wage × 1.5, from Toast time entries, plus any configured salaried cost per day |
+| Labor $ | From hourly 7shifts time punches: paid hours (clock-out − clock-in − unpaid breaks) × wage, with hours past 40 per employee per Monday–Sunday week (all locations) as overtime × wage × 1.5, plus any configured salaried cost per day. Salaried people are not in the punches' cost. With `LABOR_SOURCE=toast`, from Toast time entries instead |
 | Labor % | Labor $ ÷ net sales |
 | SPLH | Net sales ÷ labor hours |
 | Hour of day | Hour the order was opened, in the location's time zone |

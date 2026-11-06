@@ -7,15 +7,25 @@
 //   node etl/src/sevenshifts-sync.js --check                # read-only report of what the token can see
 //   node etl/src/sevenshifts-sync.js --logbook-all          # also load every log book entry ever posted
 //   node etl/src/sevenshifts-sync.js --days 7 --out .tmp/7s.sql
+//   node etl/src/sevenshifts-sync.js --days 2 --labor       # also actual labor from time punches
+//
+// With --labor, actual labor (labor_daily, the Labor tab) comes from 7shifts
+// time punches instead of Toast time entries: hourly punches only, overtime
+// past 40 h per employee per workweek (SEVENSHIFTS_WEEK_START, default 1 =
+// Monday) across all locations, salaried pay from each location's
+// salariedLaborPerDay. Run the Toast sync with --skip-labor alongside it.
 //
 // Environment: SEVENSHIFTS_ACCESS_TOKEN, LOCATIONS_JSON (or config/locations.json),
 //   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_ID
 
 import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { addDays, parseDate, todayIn } from './dates.js';
+import { addDays, eachDate, parseDate, todayIn } from './dates.js';
 import { loadLocations } from './config.js';
-import { aggregateShifts, localMidnightUtc, matchLocations, SevenShiftsClient } from './sevenshifts.js';
+import {
+  aggregateShifts, allocateOvertime, hourlyWageCents, isSalaried, localDate, localMidnightUtc, matchLocations,
+  punchHours, punchLaborRows, SevenShiftsClient, weekStartOf,
+} from './sevenshifts.js';
 import { lit } from './sql.js';
 import { D1Sink, FileSink } from './sink.js';
 
@@ -29,6 +39,7 @@ const { values: args } = parseArgs({
     check: { type: 'boolean', default: false },
     'logbook-all': { type: 'boolean', default: false },
     'skip-logbook': { type: 'boolean', default: false },
+    labor: { type: 'boolean', default: false },
     config: { type: 'string', default: 'config/locations.json' },
   },
 });
@@ -53,9 +64,36 @@ async function main() {
       });
 
   const company = await client.company();
-  const pairs = matchLocations(locations, await client.locations(company.id));
+  const remoteLocations = await client.locations(company.id);
+  const pairs = matchLocations(locations, remoteLocations);
   let failures = 0;
   let names = null; // user id -> name, loaded once if the log book is synced
+
+  // Current 7shifts wages per user, fetched once per run (used for missing
+  // wages and to tell salaried people from hourly ones).
+  const wageCache = new Map();
+  const wagesOf = async (userId) => {
+    if (!userId) return [];
+    if (!wageCache.has(userId)) {
+      try {
+        wageCache.set(userId, await client.userWages(company.id, userId));
+      } catch (err) {
+        wageCache.set(userId, []);
+        log(`  wages for user ${userId} unavailable (${err.status ?? err.message})`);
+      }
+    }
+    return wageCache.get(userId);
+  };
+
+  let labor = null;
+  if (args.labor) {
+    try {
+      labor = await punchLabor(client, company.id, remoteLocations, pairs, wagesOf);
+    } catch (err) {
+      failures++;
+      log(`Actual labor from 7shifts: FAILED - ${err.message}`);
+    }
+  }
 
   for (const { loc, remote } of pairs) {
     if (!remote) {
@@ -65,8 +103,20 @@ async function main() {
     }
     const tz = loc.timezone || remote.timezone || 'America/New_York';
     const { start, end } = dateRange(tz);
+    if (labor?.has(loc.id)) {
+      const l = labor.get(loc.id);
+      try {
+        await sink.write(laborStatements(loc.id, l.start, l.end, l.rows, loc.salariedLaborPerDay));
+        const hours = l.rows.reduce((s, r) => s + r.regular_hours + r.overtime_hours, 0);
+        const cost = l.rows.reduce((s, r) => s + r.regular_cost + r.overtime_cost, 0);
+        log(`${loc.id} actual labor: ${l.start} .. ${l.end}, ${l.punches} punches, ${hours.toFixed(1)} h, $${cost.toFixed(2)} hourly${l.salaried ? ` (${l.salaried} salaried punches left out)` : ''}`);
+      } catch (err) {
+        failures++;
+        log(`${loc.id} actual labor: FAILED - ${err.message}`);
+      }
+    }
     try {
-      const rows = await syncLocation(client, company.id, remote, tz, start, end);
+      const rows = await syncLocation(client, company.id, remote, tz, start, end, wagesOf);
       await sink.write(statements(loc.id, start, end, rows));
       const hours = rows.reduce((s, r) => s + r.hours, 0);
       const cost = rows.reduce((s, r) => s + r.cost, 0);
@@ -93,7 +143,7 @@ async function main() {
   if (failures) process.exitCode = 1;
 }
 
-async function syncLocation(client, companyId, remote, tz, start, end) {
+async function syncLocation(client, companyId, remote, tz, start, end, wagesOf) {
   const roleRows = await client.roles(companyId, remote.id);
   const roles = new Map(roleRows.map((r) => [r.id, r.name]));
   const shifts = await client.shifts(
@@ -103,22 +153,92 @@ async function syncLocation(client, companyId, remote, tz, start, end) {
     new Date(localMidnightUtc(addDays(end, 1), tz).getTime() - 1000).toISOString(),
   );
 
-  // Shifts without a wage on them fall back to the employee's current wage for that role.
+  // Shifts without a wage on them fall back to the employee's current hourly
+  // wage for that role. Salaried people's shifts are left out, as in actual labor.
   const wages = new Map();
-  for (const s of shifts) {
-    if (s.hourly_wage || !s.user_id || s.open || wages.has(s.user_id)) continue;
-    try {
-      wages.set(s.user_id, await client.userWages(companyId, s.user_id));
-    } catch (err) {
-      wages.set(s.user_id, []);
-      log(`  wages for user ${s.user_id} unavailable (${err.status ?? err.message})`);
+  for (const s of shifts) if (s.user_id && !s.open && !wages.has(s.user_id)) wages.set(s.user_id, await wagesOf(s.user_id));
+  const wageFor = (s) => hourlyWageCents(wages.get(s.user_id), s.role_id);
+  const exclude = (s) => !!s.user_id && !s.open && isSalaried(wages.get(s.user_id), s.role_id, s.hourly_wage);
+  return aggregateShifts(shifts, { timeZone: tz, roles, wageFor, excludedRoles: EXCLUDED_ROLES, exclude });
+}
+
+/**
+ * Actual labor from time punches for every matched location. Punches are
+ * read for all 7shifts locations (Central Kitchen too) from the start of the
+ * first workweek, so overtime counts every hour an employee worked that week.
+ * Returns loc.id -> { start, end, rows, punches, salaried }.
+ */
+async function punchLabor(client, companyId, remoteLocations, pairs, wagesOf) {
+  const weekStart = Number(process.env.SEVENSHIFTS_WEEK_START ?? 1);
+  const overtimeMultiplier = Number(process.env.OVERTIME_MULTIPLIER || 1.5);
+  const skip = new Set(EXCLUDED_ROLES);
+  const items = [];
+  const ranges = new Map();
+  const salariedByRemote = new Map();
+  for (const r of remoteLocations) {
+    const pair = pairs.find((p) => p.remote?.id === r.id);
+    const tz = pair?.loc.timezone || r.timezone || 'America/New_York';
+    const { start, end } = dateRange(tz);
+    const today = todayIn(tz);
+    const last = end < today ? end : today; // no punches in the future
+    if (last < start) continue;
+    ranges.set(r.id, { start, end: last });
+    const from = weekStartOf(start, weekStart);
+    const punches = await client.timePunches(
+      companyId,
+      r.id,
+      localMidnightUtc(from, tz).toISOString(),
+      new Date(localMidnightUtc(addDays(last, 1), tz).getTime() - 1000).toISOString(),
+    );
+    const roles = new Map((await client.roles(companyId, r.id)).map((x) => [x.id, x.name]));
+    let salaried = 0;
+    for (const p of punches) {
+      if (p.deleted || !p.user_id) continue;
+      const hours = punchHours(p);
+      if (hours === null) continue; // still clocked in; a later sync picks it up
+      const role = roles.get(p.role_id) || (p.role_id ? `Role ${p.role_id}` : 'No role');
+      if (skip.has(role.trim().toLowerCase())) continue;
+      const wages = await wagesOf(p.user_id);
+      if (isSalaried(wages, p.role_id, p.hourly_wage)) {
+        salaried++;
+        continue;
+      }
+      const cents = Number(p.hourly_wage) || hourlyWageCents(wages, p.role_id);
+      items.push({ remoteId: r.id, user_id: p.user_id, clockedIn: Date.parse(p.clocked_in), date: localDate(p.clocked_in, tz), hours, role, wage: cents / 100 });
+    }
+    salariedByRemote.set(r.id, salaried);
+  }
+  allocateOvertime(items, { weekStart });
+
+  const out = new Map();
+  for (const { loc, remote } of pairs) {
+    const range = remote && ranges.get(remote.id);
+    if (!range) continue;
+    const mine = items.filter((it) => it.remoteId === remote.id && it.date >= range.start && it.date <= range.end);
+    out.set(loc.id, { ...range, rows: punchLaborRows(mine, { overtimeMultiplier }), punches: mine.length, salaried: salariedByRemote.get(remote.id) || 0 });
+  }
+  return out;
+}
+
+/** Replaces actual labor for a location's date range; salaried pay is added per day, as with Toast labor. */
+function laborStatements(locationId, start, end, rows, salariedPerDay) {
+  const all = [...rows];
+  const salaried = Number(salariedPerDay) || 0;
+  if (salaried > 0) {
+    for (const date of eachDate(start, end)) {
+      all.push({ business_date: date, job_title: 'Salaried', employees: 0, shifts: 0, regular_hours: 0, overtime_hours: 0, regular_cost: Math.round(salaried * 100) / 100, overtime_cost: 0 });
     }
   }
-  const wageFor = (s) => {
-    const list = (wages.get(s.user_id) || []).filter((w) => !w.wage_type || w.wage_type === 'hourly');
-    return (list.find((w) => w.role_id === s.role_id) || list[0])?.wage_cents ?? 0;
-  };
-  return aggregateShifts(shifts, { timeZone: tz, roles, wageFor, excludedRoles: EXCLUDED_ROLES });
+  const stmts = [`DELETE FROM labor_daily WHERE location_id=${lit(locationId)} AND business_date BETWEEN ${lit(start)} AND ${lit(end)};`];
+  const cols = ['location_id', 'business_date', 'job_title', 'employees', 'shifts', 'regular_hours', 'overtime_hours', 'regular_cost', 'overtime_cost'];
+  for (let i = 0; i < all.length; i += 200) {
+    const values = all
+      .slice(i, i + 200)
+      .map((r) => `(${cols.map((c) => lit(c === 'location_id' ? locationId : r[c])).join(',')})`)
+      .join(',\n');
+    stmts.push(`INSERT INTO labor_daily (${cols.join(',')}) VALUES\n${values};`);
+  }
+  return stmts;
 }
 
 /** Log book posts with category names, author names and comments attached. */
