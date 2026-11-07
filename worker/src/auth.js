@@ -94,11 +94,12 @@ function cookie(request, name) {
   return null;
 }
 
+/** Who is asking, and when they signed in ({ email, loginAt }). */
 async function identify(request, env) {
   if (env.AUTH_MODE === 'dev') {
     // Local development only (set in .dev.vars, never in wrangler.toml).
     if (!env.DEV_USER_EMAIL) throw new HttpError(500, 'AUTH_MODE=dev requires DEV_USER_EMAIL');
-    return env.DEV_USER_EMAIL.toLowerCase();
+    return { email: env.DEV_USER_EMAIL.toLowerCase(), loginAt: new Date().toISOString() };
   }
   const teamDomain = (env.ACCESS_TEAM_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
   // The REPLACE_... placeholders in wrangler.toml count as unset, so a deploy
@@ -111,7 +112,9 @@ async function identify(request, env) {
   if (!token) throw new HttpError(401, 'Not signed in');
   const claims = await verifyAccessJwt(token, { teamDomain, audience: env.ACCESS_AUD });
   if (!claims.email) throw new HttpError(403, 'Service tokens cannot use the dashboard');
-  return String(claims.email).toLowerCase();
+  // iat = when Cloudflare Access issued this login token, i.e. when they signed in.
+  const loginAt = typeof claims.iat === 'number' ? new Date(claims.iat * 1000).toISOString() : new Date().toISOString();
+  return { email: String(claims.email).toLowerCase(), loginAt };
 }
 
 export function bootstrapAdmins(env) {
@@ -128,7 +131,7 @@ export function bootstrapAdmins(env) {
  * { email, name, role, isAdmin, locations: string[], sections: {sales,discounts,labor,items} }
  */
 export async function authenticate(request, env) {
-  const email = await identify(request, env);
+  const { email, loginAt } = await identify(request, env);
   const row = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND active = 1').bind(email).first();
   const isBootstrap = bootstrapAdmins(env).has(email);
 
@@ -157,7 +160,26 @@ export async function authenticate(request, env) {
     isAdmin,
     locations,
     sections,
+    loginAt,
   };
+}
+
+/**
+ * Remembers when this person last signed in, for the Admin page. Called once
+ * per page load (GET /api/me); keeps the latest time and never fails the request.
+ */
+export async function recordLogin(env, user) {
+  if (!user?.email || !user.loginAt) return;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO user_logins (email, last_login_at) VALUES (?, ?)
+       ON CONFLICT(email) DO UPDATE SET last_login_at = MAX(last_login_at, excluded.last_login_at)`,
+    )
+      .bind(user.email, user.loginAt)
+      .run();
+  } catch (err) {
+    console.error(`Could not record sign-in for ${user.email}: ${err.message}`);
+  }
 }
 
 export function requireSection(user, section) {

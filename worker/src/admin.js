@@ -19,6 +19,15 @@ export async function listUsers(env, user) {
     if (!byEmail.has(key)) byEmail.set(key, []);
     byEmail.get(key).push(l.location_id);
   }
+  // Last sign-in per email; empty if the table isn't there yet (first deploy).
+  let logins = new Map();
+  try {
+    const { results } = await env.DB.prepare('SELECT email, last_login_at FROM user_logins').all();
+    logins = new Map(results.map((r) => [r.email.toLowerCase(), r.last_login_at]));
+  } catch {
+    /* migration 0008 not applied yet */
+  }
+  const admins = [...bootstrapAdmins(env)];
   return {
     users: users.map((u) => ({
       email: u.email,
@@ -29,9 +38,11 @@ export async function listUsers(env, user) {
       locations: byEmail.get(u.email.toLowerCase()) || [],
       sections: Object.fromEntries(SECTIONS.map((s) => [s, !!u[`can_${s}`]])),
       updatedAt: u.updated_at,
+      lastLoginAt: logins.get(u.email.toLowerCase()) || null,
     })),
     locations,
-    bootstrapAdmins: [...bootstrapAdmins(env)],
+    bootstrapAdmins: admins,
+    bootstrapLastLogin: Object.fromEntries(admins.map((e) => [e, logins.get(e) || null])),
     // Saving a user also updates the Cloudflare Access policy (access-policy.js).
     accessSync: accessSyncConfigured(env),
   };

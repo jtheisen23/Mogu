@@ -184,6 +184,9 @@ sign in with. Then choose:
   labor data from the API, and one without Discounts gets sales numbers with gross/discount/void
   fields removed.
 
+The users list shows each person's **last sign-in**: when they last signed in through Cloudflare
+Access to open the dashboard, in your local time ("Never" if they haven't yet).
+
 **Category groups** (Admin tab): combine Toast sales categories, dining options, revenue
 centers or discount names into reporting groups, e.g. "Draft", "Draft Beer" and "HH Draft" → "Beer". Groups are
 applied when the dashboard reads data, so they cover all history immediately and never change the
