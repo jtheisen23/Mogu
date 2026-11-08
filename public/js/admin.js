@@ -163,6 +163,14 @@ const GROUP_DIMENSIONS = [
   ['labor_job', 'Labor jobs'],
 ];
 let groupsDimension = 'sales_category';
+// Column the category-group table is sorted by (null = as loaded: biggest
+// amount first). Kept when switching tabs.
+let groupsSort = { key: null, dir: 'desc' };
+const GROUP_COLUMNS = [
+  { key: 'label', text: true },
+  { key: 'net', text: false },
+  { key: 'group', text: true },
+];
 
 async function groupsCard(ctx) {
   const body = h('div');
@@ -229,19 +237,57 @@ async function groupsCard(ctx) {
       }
     };
 
+    // Rows are built once and only reordered when sorting, so anything typed
+    // into the boxes (not yet saved) stays with its row.
+    const rows = inputs.map((i) => ({
+      i,
+      tr: h('tr', {},
+        h('td', { class: 'text' }, i.label),
+        h('td', {}, fmt.money(i.net)),
+        h('td', { class: 'text' }, i.input)),
+    }));
+    const tbody = h('tbody');
+    const byName = (a, b) => a.label.trim().localeCompare(b.label.trim(), undefined, { sensitivity: 'base', numeric: true });
+    const renderRows = () => {
+      const { key, dir } = groupsSort;
+      const sign = dir === 'asc' ? 1 : -1;
+      const sorted = [...rows];
+      if (key === 'label') sorted.sort((a, b) => sign * byName(a.i, b.i));
+      else if (key === 'net') sorted.sort((a, b) => sign * ((a.i.net ?? 0) - (b.i.net ?? 0)) || byName(a.i, b.i));
+      else if (key === 'group') {
+        sorted.sort((a, b) => {
+          const ga = a.i.input.value.trim();
+          const gb = b.i.input.value.trim();
+          if (!ga || !gb) return (!ga) - (!gb) || byName(a.i, b.i); // blanks last either way
+          return sign * ga.localeCompare(gb, undefined, { sensitivity: 'base', numeric: true }) || byName(a.i, b.i);
+        });
+      }
+      tbody.replaceChildren(...sorted.map((r) => r.tr));
+      headers.forEach((th, n) => {
+        if (GROUP_COLUMNS[n].key === key) th.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+      });
+    };
+    const sortOn = (key) => {
+      if (groupsSort.key === key) groupsSort = { key, dir: groupsSort.dir === 'asc' ? 'desc' : 'asc' };
+      else groupsSort = { key, dir: GROUP_COLUMNS.find((c) => c.key === key).text ? 'asc' : 'desc' };
+      renderRows();
+    };
+    const amountLabel = dimension === 'discount' ? 'Discounts, last 12 months' : dimension === 'labor_job' ? 'Labor $, last 12 months' : 'Net sales, last 12 months';
+    const headers = GROUP_COLUMNS.map((c) => h('th', {
+      class: c.text ? 'text' : null,
+      scope: 'col',
+      tabindex: 0,
+      title: 'Click to sort',
+      onclick: () => sortOn(c.key),
+      onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), sortOn(c.key)),
+    }, c.key === 'label' ? 'Toast name' : c.key === 'net' ? amountLabel : 'Group as'));
+    renderRows();
+
     body.replaceChildren(
       chips,
       inputs.length
-        ? h('div', { class: 'table-wrap' },
-            h('table', {},
-              h('thead', {}, h('tr', {},
-                h('th', { class: 'text' }, 'Toast name'),
-                h('th', {}, dimension === 'discount' ? 'Discounts, last 12 months' : dimension === 'labor_job' ? 'Labor $, last 12 months' : 'Net sales, last 12 months'),
-                h('th', { class: 'text' }, 'Group as'))),
-              h('tbody', {}, inputs.map((i) => h('tr', {},
-                h('td', { class: 'text' }, i.label),
-                h('td', {}, fmt.money(i.net)),
-                h('td', { class: 'text' }, i.input))))))
+        ? h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, headers)), tbody))
         : h('div', { class: 'muted' }, 'No data for the last 12 months yet.'),
       h('div', { class: 'card-tools', style: { marginTop: '12px' } },
         h('button', {
